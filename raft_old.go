@@ -1,5 +1,5 @@
 //go:build raft_old
-// +build raftold
+// +build raft_old
 
 package nvmeof_raft
 
@@ -63,12 +63,39 @@ type AppendEntriesRequest struct {
 	LeaderId     uint64
 	PrevLogIndex uint64
 	PrevLogTerm  uint64
-	Entries      []Entry
+	// Entries      []Entry
 	LeaderCommit uint64
 
-	// Blockcopy Metadata
-	LeaderPbaSrc  uint64
-	LogBlockCount uint64
+	// Raw Block Copy Metadata
+	LeaderPbaSrc   uint64
+	LogBlockLength uint64
+}
+
+// Raw Block Copy Struct
+type LogEntryState uint8
+
+const (
+	// 1) requested and appended from client
+	LeaderAppended LogEntryState = iota
+
+	// 2) send to followers and still replicating
+	LeaderReplicating
+
+	// 3) achieve quroum and complete replication (commit)
+	LeaderCommitted
+)
+
+func (s LogEntryState) String() string {
+	switch s {
+	case LeaderAppended:
+		return "APPENDED"
+	case LeaderReplicating:
+		return "REPLICATING"
+	case LeaderCommitted:
+		return "COMMITTED"
+	default:
+		return "UNALLOCATED"
+	}
 }
 
 type AppendEntriesResponse struct {
@@ -100,7 +127,7 @@ type Server struct {
 
 	mu          sync.Mutex
 	currentTerm uint64
-	log         []Entry
+	log         []Entry // log[0] is sentinel node for ring buffer
 
 	id               uint64
 	address          string
@@ -117,10 +144,18 @@ type Server struct {
 	cluster      []ClusterMember
 	clusterIndex int
 
-	// Blockcopy Raft variables
-	nextPbaStart  uint64
-	logBlockCount uint64
-	logBasePba    uint64
+	// Raw Block Copy Variables
+	nextPbaStart   uint64
+	logBlockLength uint64
+	logBasePba     uint64
+
+	// Circular log fields
+	// LogIndex -> Logical Index of Raft's Log (absoulte index -> increment only)
+	// Slot -> Physical Index of Disk (ring buffer -> wrap-around)
+	headLogIndex uint64 // logical index of oldest live entry
+	tailLogIndex uint64 // next logical index to write (== len(log))
+	headSlot     uint64 // ring slot number of headLogIndex
+	tailSlot     uint64 // next ring slot to write
 }
 
 // minUint64 returns minimum of two uint64 (Go 1.10 compatible)
@@ -203,10 +238,345 @@ func NewServer(
 	}
 }
 
+// Constant for circular log entries
 const PAGE_SIZE = 4096
-const ENTRY_HEADER = 16
-const ENTRY_SIZE = 128
+const BLOCK_UNIT = 512        // slot size == block size (512B)
+const RING_SLOTS = 32         // slot # (32 * 512B = 16KB) -> small size for test
+const RING_OFFSET = PAGE_SIZE // 4096 (4KB)
 
+// Header slot layout (512B):
+// [ 0: 7] term     (8B)
+// [ 8:15] cmdLen   (8B)
+// [16:23] numSlots (8B)  total slots this entry occupies (1 + payload slots)
+// [24:511] padding (488B)
+//
+// Payload slot layout (512B * n):
+// [0:511] command bytes, last slot zero-padded
+
+// ============================================================
+// Sentinel design:
+//   s.log[0] is always the sentinel entry (Term=0, Command=nil).
+//   Sentinel is NEVER written to the ring buffer on disk.
+//   headLogIndex counts real (non-sentinel) entries discarded.
+//   Mapping: s.log[1 + (logIdx - headLogIndex)] for logIdx >= headLogIndex
+//            s.log[0] always == sentinel
+// ============================================================
+
+// ============================================================
+// Helper functions
+// ============================================================
+
+// slotsForEntry returns 1 (header) + n (payload) slots needed.
+func slotsForEntry(cmdLen int) uint64 {
+	payloadSlots := uint64((cmdLen + BLOCK_UNIT - 1) / BLOCK_UNIT)
+	return 1 + payloadSlots
+}
+
+// slotOffset returns the file byte offset for a given slot number.
+func slotOffset(slot uint64) int64 {
+	return int64(RING_OFFSET) + int64(slot)*BLOCK_UNIT
+}
+
+// usedSlots returns the number of currently occupied slots.
+func (s *Server) usedSlots() uint64 {
+	return (s.tailSlot - s.headSlot + RING_SLOTS) % RING_SLOTS
+}
+
+// freeSlots returns the number of available slots.
+func (s *Server) freeSlots() uint64 {
+	return RING_SLOTS - s.usedSlots()
+}
+
+// logSlice converts an absolute logical index to s.log slice index.
+// Sentinel is at s.log[0]; real entries start at s.log[1].
+// logIdx must be >= headLogIndex.
+func (s *Server) logSlice(logIdx uint64) uint64 {
+	return 1 + (logIdx - s.headLogIndex)
+}
+
+// Head management functions
+// advanceHead discards the oldest real entry from the ring buffer.
+// Invariants maintained:
+//   - headLogIndex is absolute and never resets
+//   - s.log[0] is always the sentinel
+//   - s.log[1] is the entry at logical index headLogIndex (before call)
+//   - s.log[1 + (logIdx - headLogIndex)] maps logIdx after call
+func (s *Server) advanceHead() {
+	if s.headLogIndex >= s.tailLogIndex {
+		panic("advanceHead: ring buffer is already empty")
+	}
+
+	// Read numSlots from header only (no full entry reconstruction needed)
+	var header [BLOCK_UNIT]byte
+	s.fd.Seek(slotOffset(s.headSlot), 0)
+	s.fd.Read(header[:])
+	numSlots := binary.LittleEndian.Uint64(header[16:])
+
+	// Advance disk ring pointer
+	s.headSlot = (s.headSlot + numSlots) % RING_SLOTS
+	s.headLogIndex++
+
+	// Trim s.log: drop s.log[1] (oldest real entry), keep s.log[0] (sentinel).
+	// Before: s.log = [sentinel, oldest, ..., newest]
+	// After:  s.log = [sentinel, 2nd-oldest, ..., newest]
+	if len(s.log) > 1 {
+		s.log = append(s.log[:1], s.log[2:]...)
+	}
+}
+
+// ============================================================
+// Ring buffer I/O
+// ============================================================
+// writeEntryToRing writes one real (non-sentinel) entry to the ring buffer.
+// Advances head if not enough space.
+func (s *Server) writeEntryToRing(e Entry) {
+	needed := slotsForEntry(len(e.Command))
+
+	// Reclaim oldest entries until enough space is available
+	for needed > s.freeSlots() {
+		s.advanceHead()
+	}
+
+	// Write header slot
+	var header [BLOCK_UNIT]byte
+	binary.LittleEndian.PutUint64(header[0:], e.Term)
+	binary.LittleEndian.PutUint64(header[8:], uint64(len(e.Command)))
+	binary.LittleEndian.PutUint64(header[16:], needed)
+	// header[24:] remains zero padding
+	s.fd.Seek(slotOffset(s.tailSlot), 0)
+	s.fd.Write(header[:])
+
+	// Write payload slots
+	cmdWritten := 0
+	for i := uint64(1); i < needed; i++ {
+		slot := (s.tailSlot + i) % RING_SLOTS
+		var payload [BLOCK_UNIT]byte
+		n := copy(payload[:], e.Command[cmdWritten:])
+		cmdWritten += n
+		// payload[n:] remains zero padding
+		s.fd.Seek(slotOffset(slot), 0)
+		s.fd.Write(payload[:])
+	}
+
+	s.tailSlot = (s.tailSlot + needed) % RING_SLOTS
+	s.tailLogIndex++
+}
+
+// readEntryFromSlot reads one entry starting at headerSlot.
+// Returns the entry and the next slot after it.
+func (s *Server) readEntryFromSlot(headerSlot uint64) (Entry, uint64) {
+	// Read header slot
+	var header [BLOCK_UNIT]byte
+	s.fd.Seek(slotOffset(headerSlot), 0)
+	s.fd.Read(header[:])
+
+	term := binary.LittleEndian.Uint64(header[0:])
+	cmdLen := binary.LittleEndian.Uint64(header[8:])
+	numSlots := binary.LittleEndian.Uint64(header[16:])
+
+	// Read payload slots
+	cmd := make([]byte, cmdLen)
+	copied := 0
+	for i := uint64(1); i < numSlots; i++ {
+		slot := (headerSlot + i) % RING_SLOTS
+		var payload [BLOCK_UNIT]byte
+		s.fd.Seek(slotOffset(slot), 0)
+		s.fd.Read(payload[:])
+		copied += copy(cmd[copied:], payload[:])
+	}
+
+	nextSlot := (headerSlot + numSlots) % RING_SLOTS
+	return Entry{Term: term, Command: cmd}, nextSlot
+}
+
+// ============================================================
+// Persist / Restore
+// ============================================================
+
+// persistCircular writes new entries to the ring buffer and updates the header.
+// Sentinel (s.log[0]) is never written to disk.
+// Header page layout:
+//
+//	[ 0: 7] currentTerm
+//	[ 8:15] votedFor
+//	[16:23] headLogIndex
+//	[24:31] tailLogIndex
+//	[32:39] headSlot
+//	[40:47] tailSlot
+//	[48:55] commitIndex
+//	[56:63] lastApplied
+func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
+	t := time.Now()
+
+	if nNewEntries == 0 && writeLog {
+		nNewEntries = len(s.log)
+	}
+
+	// Write new real entries to ring buffer (skip sentinel at s.log[0])
+	if writeLog && nNewEntries > 0 {
+		start := len(s.log) - nNewEntries
+		if start < 1 {
+			start = 1 // never write sentinel (s.log[0])
+		}
+		for i := start; i < len(s.log); i++ {
+			s.writeEntryToRing(s.log[i])
+		}
+	}
+
+	// Write header page
+	s.fd.Seek(0, 0)
+	var page [PAGE_SIZE]byte
+	binary.LittleEndian.PutUint64(page[0:], s.currentTerm)
+	binary.LittleEndian.PutUint64(page[8:], s.getVotedFor())
+	binary.LittleEndian.PutUint64(page[16:], s.headLogIndex)
+	binary.LittleEndian.PutUint64(page[24:], s.tailLogIndex)
+	binary.LittleEndian.PutUint64(page[32:], s.headSlot)
+	binary.LittleEndian.PutUint64(page[40:], s.tailSlot)
+	binary.LittleEndian.PutUint64(page[48:], s.commitIndex)
+	binary.LittleEndian.PutUint64(page[56:], s.lastApplied)
+
+	if _, err := s.fd.Write(page[:]); err != nil {
+		panic(err)
+	}
+	if err := s.fd.Sync(); err != nil {
+		panic(err)
+	}
+
+	s.debugf("Persisted in %s. Term: %d. LogLen: %d (%d new). VotedFor: %d.",
+		time.Now().Sub(t), s.currentTerm, len(s.log), nNewEntries, s.getVotedFor())
+}
+
+// restoreCircular reads the header and replays the ring buffer into s.log.
+// s.log[0] is always the sentinel after restore.
+func (s *Server) restoreCircular() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.fd == nil {
+		if err := os.MkdirAll(s.metadataDir, 0755); err != nil {
+			panic(err)
+		}
+		var err error
+		s.fd, err = os.OpenFile(
+			path.Join(s.metadataDir, s.Metadata()),
+			os.O_SYNC|os.O_CREATE|os.O_RDWR,
+			0644,
+		)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	s.fd.Seek(0, 0)
+	var page [PAGE_SIZE]byte
+	n, err := io.ReadFull(s.fd, page[:])
+
+	// Empty or corrupted: initialize fresh state
+	if err == io.EOF || err == io.ErrUnexpectedEOF || n < PAGE_SIZE {
+		s.currentTerm = 0
+		s.setVotedFor(0)
+		s.headLogIndex = 0
+		s.tailLogIndex = 0
+		s.headSlot = 0
+		s.tailSlot = 0
+		s.commitIndex = 0
+		s.lastApplied = 0
+		s.log = nil
+		s.ensureLog() // insert sentinel
+		return
+	}
+	if err != nil {
+		panic(err)
+	}
+
+	s.currentTerm = binary.LittleEndian.Uint64(page[0:])
+	s.setVotedFor(binary.LittleEndian.Uint64(page[8:]))
+	s.headLogIndex = binary.LittleEndian.Uint64(page[16:])
+	s.tailLogIndex = binary.LittleEndian.Uint64(page[24:])
+	s.headSlot = binary.LittleEndian.Uint64(page[32:])
+	s.tailSlot = binary.LittleEndian.Uint64(page[40:])
+	s.commitIndex = binary.LittleEndian.Uint64(page[48:])
+	s.lastApplied = binary.LittleEndian.Uint64(page[56:])
+
+	// Rebuild s.log: sentinel first, then real entries from ring buffer
+	s.log = nil
+	s.ensureLog() // s.log[0] = sentinel
+
+	slot := s.headSlot
+	for idx := s.headLogIndex; idx < s.tailLogIndex; idx++ {
+		e, nextSlot := s.readEntryFromSlot(slot)
+		s.log = append(s.log, e)
+		slot = nextSlot
+	}
+
+	// Verify invariant
+	expected := s.tailLogIndex - s.headLogIndex
+	actual := uint64(len(s.log) - 1) // subtract sentinel
+	if actual != expected {
+		panic(fmt.Sprintf("restoreCircular: invariant violated: expected %d real entries, got %d", expected, actual))
+	}
+}
+
+// ============================================================
+// advanceCommitIndex — logSlice() 사용
+// ============================================================
+
+func (s *Server) advanceCommitIndex() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state == leaderState {
+		// tailLogIndex-1 == absolute index of last real entry
+		lastLogIndex := s.tailLogIndex - 1
+		for i := lastLogIndex; i > s.commitIndex; i-- {
+			quorum := len(s.cluster)/2 + 1
+			for j := range s.cluster {
+				if quorum == 0 {
+					break
+				}
+				isLeader := j == s.clusterIndex
+				if isLeader || s.cluster[j].matchIndex >= i {
+					quorum--
+				}
+			}
+			if quorum == 0 {
+				s.commitIndex = i
+				s.debugf("New commit index: %d.", i)
+				break
+			}
+		}
+	}
+
+	if s.lastApplied < s.commitIndex {
+		// logSlice(): absolute logIdx → s.log slice index
+		logEntry := s.log[s.logSlice(s.lastApplied)]
+
+		if len(logEntry.Command) > 0 {
+			s.debugf("Entry applied: %d.", s.lastApplied)
+			res, err := s.statemachine.Apply(logEntry.Command)
+			if logEntry.result != nil {
+				logEntry.result <- ApplyResult{Result: res, Error: err}
+			}
+		}
+		s.lastApplied++
+
+		// Advance head up to minMatchIndex (all followers have replicated)
+		minMatch := s.commitIndex
+		for j := range s.cluster {
+			if j == s.clusterIndex {
+				continue
+			}
+			if s.cluster[j].matchIndex < minMatch {
+				minMatch = s.cluster[j].matchIndex
+			}
+		}
+		for s.headLogIndex < minMatch {
+			s.advanceHead()
+		}
+	}
+}
+
+/*
 func (s *Server) persist(writeLog bool, nNewEntries int) {
 	t := time.Now()
 	if nNewEntries == 0 && writeLog {
@@ -249,7 +619,7 @@ func (s *Server) persist(writeLog bool, nNewEntries int) {
 		panic(err)
 	}
 	s.debugf("Persisted in %s. Term: %d. Log Len: %d (%d new). Voted For: %d.", time.Now().Sub(t), s.currentTerm, len(s.log), nNewEntries, s.getVotedFor())
-}
+}*/
 
 func (s *Server) ensureLog() {
 	if len(s.log) == 0 {
@@ -281,6 +651,7 @@ func (s *Server) Metadata() string {
 	return fmt.Sprintf("md_%d.dat", s.id)
 }
 
+/*
 func (s *Server) restore() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -364,7 +735,7 @@ func (s *Server) restore() {
 	}
 
 	s.ensureLog()
-}
+}*/
 
 func (s *Server) requestVote() {
 	for i := range s.cluster {
@@ -440,7 +811,7 @@ func (s *Server) HandleRequestVoteRequest(req RequestVoteRequest, rsp *RequestVo
 		s.setVotedFor(req.CandidateId)
 		rsp.VoteGranted = true
 		s.resetElectionTimeout()
-		s.persist(false, 0)
+		s.persistCircular(false, 0)
 	} else {
 		s.debugf("Not granting vote request from %d.", +req.CandidateId)
 	}
@@ -457,7 +828,7 @@ func (s *Server) updateTerm(msg RPCMessage) bool {
 		transitioned = true
 		s.debug("Transitioned to follower")
 		s.resetElectionTimeout()
-		s.persist(false, 0)
+		s.persistCircular(false, 0)
 	}
 	return transitioned
 }
@@ -469,7 +840,7 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 	s.updateTerm(req.RPCMessage)
 
 	s.debugf("[RECV AppendEntries] from leader=%d term=%d prev=(%d,%d) commit=%d pba=%d blocks=%d",
-		req.LeaderId, req.Term, req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.LeaderPbaSrc, req.LogBlockCount)
+		req.LeaderId, req.Term, req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.LeaderPbaSrc, req.LogBlockLength)
 
 	if req.Term == s.currentTerm && s.state == candidateState {
 		s.state = followerState
@@ -522,7 +893,7 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 		})
 	}
 
-	s.persist(true, len(commands))
+	s.persistCircular(true, len(commands))
 	s.debug("Waiting to be applied!")
 
 	s.mu.Unlock()
@@ -555,6 +926,7 @@ func nvmeBaseDir(id uint64) string {
 	}
 }
 
+/*
 func appendToFollowerNVMe(followerID uint64, entries []Entry) error {
 	if len(entries) == 0 {
 		return nil
@@ -586,7 +958,7 @@ func appendToFollowerNVMe(followerID uint64, entries []Entry) error {
 		return err
 	}
 	return nil
-}
+}*/
 
 func (s *Server) syncFromNVMe() error {
 	myPath := filepath.Join(nvmeBaseDir(s.id), "raft.log")
@@ -663,7 +1035,7 @@ const MAX_APPEND_ENTRIES_BATCH = 8000
 
 func (s *Server) appendEntries() {
 	s.debugf("LEADER appendEntries() called")
-	
+
 	s.mu.Lock()
 	if s.state != leaderState {
 		s.debugf("LEADER is not leaderState, early Return")
@@ -686,7 +1058,7 @@ func (s *Server) appendEntries() {
 
 			next := s.cluster[followerIdx].nextIndex
 			last := uint64(len(s.log) - 1)
-			
+
 			// Guard: fix nextIndex if out of bounds
 			if next > last+1 {
 				s.debugf("Fixing nextIndex for %d: %d -> %d (last=%d)", s.cluster[followerIdx].Id, next, last+1, last)
@@ -696,9 +1068,12 @@ func (s *Server) appendEntries() {
 
 			prevLogIndex := next - 1
 			var prevLogTerm uint64
-			if prevLogIndex > 0 {
-				prevLogTerm = s.log[prevLogIndex].Term
+			if prevLogIndex >= s.headLogIndex {
+				prevLogTerm = s.log[prevLogIndex-s.headLogIndex].Term
 			} else {
+				// prevLogIndex가 이미 링버퍼에서 삭제된 경우
+				// slow follower가 너무 뒤처진 것 → 별도 처리 필요 (현재는 0으로 fallback)
+				// polarFS의 스냅샷 방식 가능 -> 하지만 지금 단계에서 구현 X
 				prevLogTerm = 0
 			}
 
@@ -712,24 +1087,25 @@ func (s *Server) appendEntries() {
 			}
 
 			bytesToCopy := lenEntries * uint64(ENTRY_SIZE)
-			var logBlockCount uint64 = 0
+			var logBlockLength uint64 = 0
 			if bytesToCopy > 0 {
-				logBlockCount = (bytesToCopy + 512 - 1) / 512
+				logBlockLength = (bytesToCopy + 512 - 1) / 512
 			}
 
 			// Test dummy data
 			leaderPbaSrc := uint64(0xdeadbeef)
-			logBlockCount = uint64(5678)
+			logBlockLength = uint64(5678)
 
 			req := AppendEntriesRequest{
-				RPCMessage:    RPCMessage{Term: term},
-				LeaderId:      leaderId,
-				PrevLogIndex:  prevLogIndex,
-				PrevLogTerm:   prevLogTerm,
-				Entries:       nil,
-				LeaderCommit:  leaderCommit,
-				LeaderPbaSrc:  leaderPbaSrc,
-				LogBlockCount: logBlockCount,
+				RPCMessage:   RPCMessage{Term: term},
+				LeaderId:     leaderId,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				// Entries:       nil,
+				LeaderCommit: leaderCommit,
+
+				LeaderPbaSrc:   leaderPbaSrc,
+				LogBlockLength: logBlockLength,
 			}
 
 			s.mu.Unlock()
@@ -757,7 +1133,7 @@ func (s *Server) appendEntries() {
 				prev := s.cluster[followerIdx].nextIndex
 				s.cluster[followerIdx].nextIndex = maxUint64(req.PrevLogIndex+lenEntries+1, 1)
 				s.cluster[followerIdx].matchIndex = s.cluster[followerIdx].nextIndex - 1
-				s.debugf("Accepted by %d. Prev: %d → Next: %d, Match: %d.", 
+				s.debugf("Accepted by %d. Prev: %d → Next: %d, Match: %d.",
 					s.cluster[followerIdx].Id, prev, s.cluster[followerIdx].nextIndex, s.cluster[followerIdx].matchIndex)
 			} else {
 				s.cluster[followerIdx].nextIndex = maxUint64(s.cluster[followerIdx].nextIndex-1, 1)
@@ -772,7 +1148,7 @@ func (s *Server) advanceCommitIndex() {
 	defer s.mu.Unlock()
 
 	if s.state == leaderState {
-		lastLogIndex := uint64(len(s.log) - 1)
+		lastLogIndex := s.tailLogIndex - 1
 		for i := lastLogIndex; i > s.commitIndex; i-- {
 			quorum := len(s.cluster)/2 + 1
 			for j := range s.cluster {
@@ -793,20 +1169,33 @@ func (s *Server) advanceCommitIndex() {
 	}
 
 	if s.lastApplied < s.commitIndex {
-		logEntry := s.log[s.lastApplied]
+		// Convert absolute logical index → s.log slice index
+		sliceIdx := s.lastApplied - s.headLogIndex
+		logEntry := s.log[sliceIdx]
 
 		if len(logEntry.Command) > 0 {
 			s.debugf("Entry applied: %d.", s.lastApplied)
 			res, err := s.statemachine.Apply(logEntry.Command)
-
 			if logEntry.result != nil {
-				logEntry.result <- ApplyResult{
-					Result: res,
-					Error:  err,
-				}
+				logEntry.result <- ApplyResult{Result: res, Error: err}
 			}
 		}
 		s.lastApplied++
+
+		// Advance head up to minMatchIndex across all followers
+		minMatch := s.commitIndex
+		for j := range s.cluster {
+			if j == s.clusterIndex {
+				continue
+			}
+			if s.cluster[j].matchIndex < minMatch {
+				minMatch = s.cluster[j].matchIndex
+			}
+		}
+		// headLogIndex is absolute, so this loop is always correct
+		for s.headLogIndex < minMatch {
+			s.advanceHead()
+		}
 	}
 }
 
@@ -833,7 +1222,7 @@ func (s *Server) timeout() {
 			}
 		}
 		s.resetElectionTimeout()
-		s.persist(false, 0)
+		s.persistCircular(false, 0)
 		s.requestVote()
 	}
 }
@@ -859,7 +1248,7 @@ func (s *Server) becomeLeader() {
 		s.state = leaderState
 
 		s.log = append(s.log, Entry{Term: s.currentTerm, Command: nil})
-		s.persist(true, 1)
+		s.persistCircular(true, 1)
 		s.heartbeatTimeout = time.Now()
 	}
 }
@@ -883,7 +1272,7 @@ func (s *Server) Start() {
 	s.done = false
 	s.mu.Unlock()
 
-	s.restore()
+	s.restoreCircular()
 
 	rpcServer := rpc.NewServer()
 	rpcServer.Register(s)
