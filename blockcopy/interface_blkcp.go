@@ -18,123 +18,134 @@ package blockcopy
 #include <unistd.h>
 #include <stdint.h>
 
-#define ALIGN 4096				// for O_DIRECT (4KB)
-#define EXTENTS_MAX 1			// iteration with single extent. if need, modify this constant value
-#define DEVICE_BLOCK_SIZE 512	// size of device sector (not use yet)
+#define ALIGN 4096				// alignment for O_DIRECT (4KB page boundary)
+#define EXTENTS_MAX 1			// iterate with single extent; increase if needed
+#define DEVICE_BLOCK_SIZE 512	// NVMe sector size
 
-// Structure to hold physical block address segment
-typedef struct {
-    uint64_t pba;
-    size_t len;
-} pba_seg;
-
-// Helper function to get physical block address from logical offset
-static int c_get_pba(int fd, off_t logical, size_t length, 
+// c_get_pba: retrieves physical block address for a given logical file offset.
+// Uses FIEMAP ioctl to map logical offset -> physical block address.
+//
+// Parameters:
+//   fd      - open file descriptor (O_RDONLY)
+//   logical - logical byte offset within the file
+//   length  - byte length of the region to query
+//   out_pba - output: physical block address (bytes from device start)
+//   out_len - output: length of the mapped region
+//
+// Returns 0 on success, -1 on failure.
+static int c_get_pba(int fd, off_t logical, size_t length,
 						uint64_t* out_pba, size_t* out_len) {
-    size_t size = sizeof(struct fiemap) + EXTENTS_MAX * sizeof(struct fiemap_extent);
-    struct fiemap *fiemap = (struct fiemap*)calloc(1, size);
-    if(!fiemap) return -1;
+	size_t size = sizeof(struct fiemap) + EXTENTS_MAX * sizeof(struct fiemap_extent);
+	struct fiemap *fiemap = (struct fiemap*)calloc(1, size);
+	if (!fiemap) return -1;
 
-    fiemap->fm_start = logical;
-    fiemap->fm_length = length;
-    fiemap->fm_extent_count = EXTENTS_MAX;
+	fiemap->fm_start        = logical;
+	fiemap->fm_length       = length;
+	fiemap->fm_extent_count = EXTENTS_MAX;
 
-    int result = 0;
+	int result = 0;
 
-    if (ioctl(fd, FS_IOC_FIEMAP, fiemap) < 0) {
-        perror("ioctl fiemap");
-        result = -1;
-        goto exit;
-    }
-    
-    if (fiemap->fm_mapped_extents > EXTENTS_MAX) {
-        fprintf(stderr, "More mapped extents needed: mapped %ld, but need %u\n", 
-                (long)EXTENTS_MAX, fiemap->fm_mapped_extents);
-        result = -1;
-        goto exit;
-    }
-    
-    if (fiemap->fm_mapped_extents == 0) {
-        fprintf(stderr, "no extents mapped at logical %ld\n", (long)logical);
-        result = -1;
-        goto exit;
-    }
+	if (ioctl(fd, FS_IOC_FIEMAP, fiemap) < 0) {
+		perror("ioctl fiemap");
+		result = -1;
+		goto exit;
+	}
 
-    // Get first extent
-    struct fiemap_extent *e = &fiemap->fm_extents[0];
-    *out_pba = e->fe_physical + (logical - e->fe_logical);
-    *out_len = length;
+	if (fiemap->fm_mapped_extents > EXTENTS_MAX) {
+		fprintf(stderr, "More mapped extents needed: mapped %u, max %d\n",
+				fiemap->fm_mapped_extents, EXTENTS_MAX);
+		result = -1;
+		goto exit;
+	}
+
+	if (fiemap->fm_mapped_extents == 0) {
+		fprintf(stderr, "no extents mapped at logical %ld\n", (long)logical);
+		result = -1;
+		goto exit;
+	}
+
+	{
+		// compute exact PBA: extent physical base + intra-extent offset
+		struct fiemap_extent *e = &fiemap->fm_extents[0];
+		*out_pba = e->fe_physical + (logical - e->fe_logical);
+		*out_len = length;
+	}
 
 exit:
-    free(fiemap);
-    return result;
+	free(fiemap);
+	return result;
 }
 
-// Helper function to write from source PBA to destination PBA
+// c_write_pba: copies nbytes from pba_src to pba_dst on the same block device.
+// Uses O_DIRECT aligned I/O to bypass the page cache.
+//
+// Parameters:
+//   fd      - open device file descriptor (O_RDWR | O_DIRECT)
+//   pba_src - source physical byte address
+//   pba_dst - destination physical byte address
+//   nbytes  - number of bytes to copy (must be ALIGN-aligned)
+//
+// Returns 0 on success, -1 on failure.
 static int c_write_pba(int fd, uint64_t pba_src, uint64_t pba_dst, size_t nbytes) {
-    void *buf;
-    if (posix_memalign(&buf, ALIGN, nbytes) != 0) {
-        perror("posix_memalign");
-        return -1;
-    }
+	void *buf;
+	if (posix_memalign(&buf, ALIGN, nbytes) != 0) {
+		perror("posix_memalign");
+		return -1;
+	}
 
-    // Read from source PBA
-    ssize_t r = pread(fd, buf, nbytes, pba_src);
-    if (r != (ssize_t)nbytes) {
-        perror("pread");
-        free(buf);
-        return -1;
-    }
+	// read from source PBA
+	ssize_t r = pread(fd, buf, nbytes, (off_t)pba_src);
+	if (r != (ssize_t)nbytes) {
+		perror("pread");
+		free(buf);
+		return -1;
+	}
 
-    // Write to destination PBA
-    ssize_t w = pwrite(fd, buf, nbytes, pba_dst);
-    if (w != (ssize_t)nbytes) {
-        perror("pwrite");
-        free(buf);
-        return -1;
-    }
+	// write to destination PBA
+	ssize_t w = pwrite(fd, buf, nbytes, (off_t)pba_dst);
+	if (w != (ssize_t)nbytes) {
+		perror("pwrite");
+		free(buf);
+		return -1;
+	}
 
-    free(buf);
-    return 0;
+	free(buf);
+	return 0;
 }
 */
 import "C"
 import (
 	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
 )
 
-// PBASegment represents a physical block address segment
+// PBASegment represents a contiguous physical block address region.
 type PBASegment struct {
-	PBA uint64
-	Len uint64
+	PBA uint64 // physical byte address from device start
+	Len uint64 // length in bytes
 }
 
-// l_get_pba gets the physical block address for a logical offset in a file
-// This is the local (leader) version of get_pba
+// GetPBA retrieves the physical block address for a logical offset in a file.
+// Wraps c_get_pba via FIEMAP ioctl.
 //
 // Parameters:
-//   - filePath: path to the file to query
-//   - logical: logical offset in the file
-//   - length: length of the region to query
 //
-// Returns:
-//   - PBASegment: physical block address and length
-//   - error: error if operation fails
-func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error) {
-	// Open file with O_RDONLY flag
+//	filePath - path to the file (must be on a FIEMAP-capable filesystem, e.g. ext4)
+//	logical  - logical byte offset within the file
+//	length   - byte length of the region to query
+//
+// Returns PBASegment and nil error on success.
+func GetPBA(filePath string, logical int64, length uint64) (PBASegment, error) {
 	fd, err := syscall.Open(filePath, syscall.O_RDONLY, 0)
 	if err != nil {
-		return PBASegment{}, fmt.Errorf("failed to open file %s: %v", filePath, err)
+		return PBASegment{}, fmt.Errorf("GetPBA: open %s: %v", filePath, err)
 	}
 	defer syscall.Close(fd)
 
 	var outPBA C.uint64_t
 	var outLen C.size_t
 
-	// Call C function to get PBA
 	ret := C.c_get_pba(
 		C.int(fd),
 		C.off_t(logical),
@@ -142,9 +153,8 @@ func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 		(*C.uint64_t)(unsafe.Pointer(&outPBA)),
 		(*C.size_t)(unsafe.Pointer(&outLen)),
 	)
-
 	if ret != 0 {
-		return PBASegment{}, fmt.Errorf("c_get_pba failed with code %d", ret)
+		return PBASegment{}, fmt.Errorf("GetPBA: c_get_pba failed (logical=%d, len=%d)", logical, length)
 	}
 
 	return PBASegment{
@@ -153,136 +163,44 @@ func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 	}, nil
 }
 
-// r_write_pba performs a block copy operation from source PBA to destination PBA
-// This is the remote (follower) version of write_pba
+// WritePBA copies nbytes from pbaSrc to pbaDst on the block device at devicePath.
+// Wraps c_write_pba using O_DIRECT aligned I/O.
 //
 // Parameters:
-//   - devicePath: path to the block device (e.g., /dev/nvme0n1)
-//   - pbaSrc: source physical block address
-//   - pbaDst: destination physical block address
-//   - nbytes: number of bytes to copy
 //
-// Returns:
-//   - error: error if operation fails
-func r_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
-	// Open device with O_RDWR and O_DIRECT flags
+//	devicePath - path to the NVMe-oF block device (e.g. /dev/nvme-remote)
+//	pbaSrc     - source physical byte address
+//	pbaDst     - destination physical byte address
+//	nbytes     - number of bytes to copy (rounded up to ALIGN=4096 internally)
+//
+// Returns nil on success.
+func WritePBA(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
 	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
 	if err != nil {
-		return fmt.Errorf("failed to open device %s: %v", devicePath, err)
+		return fmt.Errorf("WritePBA: open %s: %v", devicePath, err)
 	}
 	defer syscall.Close(fd)
 
-	// Call C function to perform PBA write
 	ret := C.c_write_pba(
 		C.int(fd),
 		C.uint64_t(pbaSrc),
 		C.uint64_t(pbaDst),
 		C.size_t(nbytes),
 	)
-
 	if ret != 0 {
-		return fmt.Errorf("c_write_pba failed with code %d", ret)
-	}
-
-	return nil
-}
-
-// l_get_pba_batch gets physical block addresses for multiple logical offsets
-// This is a batch version for efficiency
-//
-// Parameters:
-//   - filePath: path to the file to query
-//   - logicals: slice of logical offsets
-//   - length: length of each region (assumes uniform block size)
-//
-// Returns:
-//   - []PBASegment: slice of physical block address segments
-//   - error: error if any operation fails
-func l_get_pba_batch(filePath string, logicals []int64, length uint64) ([]PBASegment, error) {
-	// Open file once for all operations
-	fd, err := syscall.Open(filePath, syscall.O_RDONLY, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file %s: %v", filePath, err)
-	}
-	defer syscall.Close(fd)
-
-	results := make([]PBASegment, len(logicals))
-
-	for i, logical := range logicals {
-		var outPBA C.uint64_t
-		var outLen C.size_t
-
-		ret := C.c_get_pba(
-			C.int(fd),
-			C.off_t(logical),
-			C.size_t(length),
-			(*C.uint64_t)(unsafe.Pointer(&outPBA)),
-			(*C.size_t)(unsafe.Pointer(&outLen)),
-		)
-
-		if ret != 0 {
-			return nil, fmt.Errorf("c_get_pba failed for logical offset %d (index %d): code %d", logical, i, ret)
-		}
-
-		results[i] = PBASegment{
-			PBA: uint64(outPBA),
-			Len: uint64(outLen),
-		}
-	}
-
-	return results, nil
-}
-
-// r_write_pba_batch performs multiple block copy operations in batch
-// This is a batch version for efficiency
-//
-// Parameters:
-//   - devicePath: path to the block device
-//   - pbaSrcs: slice of source physical block addresses
-//   - pbaDsts: slice of destination physical block addresses
-//   - nbytes: number of bytes to copy for each operation
-//
-// Returns:
-//   - error: error if any operation fails
-func r_write_pba_batch(devicePath string, pbaSrcs []uint64, pbaDsts []uint64, nbytes uint64) error {
-	if len(pbaSrcs) != len(pbaDsts) {
-		return fmt.Errorf("pbaSrcs and pbaDsts must have the same length")
-	}
-
-	// Open device once for all operations
-	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open device %s: %v", devicePath, err)
-	}
-	defer syscall.Close(fd)
-
-	for i := range pbaSrcs {
-		ret := C.c_write_pba(
-			C.int(fd),
-			C.uint64_t(pbaSrcs[i]),
-			C.uint64_t(pbaDsts[i]),
-			C.size_t(nbytes),
-		)
-
-		if ret != 0 {
-			return fmt.Errorf("c_write_pba failed for operation %d (src: %d, dst: %d): code %d", 
-				i, pbaSrcs[i], pbaDsts[i], ret)
-		}
-	}
-
-	return nil
-}
-
-// Helper function to check if a file exists and is accessible
-func checkFileAccess(path string) error {
-	_, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("file access check failed for %s: %v", path, err)
+		return fmt.Errorf("WritePBA: c_write_pba failed (src=%d, dst=%d, nbytes=%d)", pbaSrc, pbaDst, nbytes)
 	}
 	return nil
 }
 
-// GetBlockSize returns the default block size used for operations
+// AlignUp rounds nbytes up to the nearest ALIGN (4096) boundary.
+// Required because O_DIRECT mandates 4KB-aligned transfer sizes.
+func AlignUp(nbytes uint64) uint64 {
+	const align = 4096
+	return (nbytes + align - 1) &^ (align - 1)
+}
+
+// GetBlockSize returns the O_DIRECT alignment size (4096 bytes).
 func GetBlockSize() uint64 {
 	return uint64(C.ALIGN)
 }
