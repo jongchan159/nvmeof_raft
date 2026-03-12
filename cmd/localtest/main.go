@@ -42,14 +42,14 @@ func main() {
 		return
 	}
 	req := nvmeof_raft.AppendEntriesRequest{
-		RPCMessage:    nvmeof_raft.RPCMessage{Term: 1},
-		LeaderId:      1,
-		PrevLogIndex:  0,
-		PrevLogTerm:   0,
-		Entries:       nil,
-		LeaderCommit:  0,
-		LeaderPbaSrc:  1234,
-		LogBlockCount: 7,
+		RPCMessage:   nvmeof_raft.RPCMessage{Term: 1},
+		LeaderId:     1,
+		PrevLogIndex: 0,
+		PrevLogTerm:  0,
+		// Entries:       nil,
+		LeaderCommit:   0,
+		LeaderPbaSrc:   1234,
+		LogBlockLength: 7,
 	}
 	var rsp nvmeof_raft.AppendEntriesResponse
 	err = client.Call("Server.HandleAppendEntriesRequest", req, &rsp)
@@ -73,4 +73,3 @@ func main() {
 	fmt.Println("Ready. Now trigger test RPC ...")
 	time.Sleep(10 * time.Second)
 }
-

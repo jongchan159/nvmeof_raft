@@ -1,5 +1,5 @@
-//go:build raft_old
-// +build raft_old
+//go:build raft
+// +build raft
 
 package nvmeof_raft
 
@@ -889,9 +889,9 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			return nil
 		}
 
-		if err := s.syncFromNVMe(); err != nil {
-			s.warnf("syncFromNVMe failed: %v", err)
-		}
+		// if err := s.syncFromNVMe(); err != nil {
+		// 	s.warnf("syncFromNVMe failed: %v", err)
+		// }
 		s.commitIndex = minUint64(req.LeaderCommit, s.tailLogIndex-1)
 	}
 

@@ -1,5 +1,5 @@
-//go:build !raftold
-// +build !raftold
+//go:build !raft
+// +build !raft
 
 package nvmeof_raft
 

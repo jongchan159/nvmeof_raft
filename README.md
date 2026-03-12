@@ -1,3 +1,5 @@
+## Configurance
+
 ## Command
 ### Test Code
 1. TestGetPBA
@@ -49,13 +51,13 @@ go build -o raft_server ./cmd
 ```
 
 3. Raft Test
-# 리더에게 요청 전송
+리더에게 요청 전송
 curl -X POST http://eternity5:7005/write \
   -H "Content-Type: application/json" \
   -d '{"key":"test", "value":"hello"}'
 
-# 상태 확인
+상태 확인
 curl http://eternity5:7005/status
 
-# 로그 확인
+로그 확인
 curl http://eternity5:7005/logs

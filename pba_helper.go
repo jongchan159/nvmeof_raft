@@ -1,5 +1,5 @@
-//go:build raft_old
-// +build raft_old
+//go:build raft
+// +build raft
 
 package nvmeof_raft
 
