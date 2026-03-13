@@ -63,12 +63,14 @@ type AppendEntriesRequest struct {
 	LeaderId     uint64
 	PrevLogIndex uint64
 	PrevLogTerm  uint64
-	// Entries      []Entry
+	// Entries are NOT sent over the wire; PBA copy handles data transfer.
 	LeaderCommit uint64
 
 	// Raw Block Copy Metadata
-	LeaderPbaSrc   uint64
-	LogBlockLength uint64
+	LeaderPbaSrc   uint64 // physical block address of source data on leader's ring
+	LogBlockLength uint64 // number of 512B blocks to copy
+	NumEntries     uint64 // number of log entries being replicated (for ring pointer update)
+	SlotsPerEntry  uint64 // slots each entry occupies on the leader's ring (header + payload)
 }
 
 // Raw Block Copy Struct
@@ -563,8 +565,8 @@ func (s *Server) advanceCommitIndex() {
 		}
 	}
 
-	// Apply to state machine
-	if s.lastApplied >= s.headLogIndex &&
+	// Apply committed entries to state machine (multiple per tick)
+	for s.lastApplied >= s.headLogIndex &&
 		s.lastApplied < s.tailLogIndex &&
 		s.lastApplied < s.commitIndex {
 		// logSlice(): absolute logIdx → s.log slice index
@@ -578,9 +580,11 @@ func (s *Server) advanceCommitIndex() {
 			}
 		}
 		s.lastApplied++
+	}
 
-		// Advance head up to minMatchIndex (all followers have replicated)
-		// need snapshot to consider the dead node
+	// Advance head up to minMatchIndex (all followers have replicated)
+	// need snapshot to consider the dead node
+	if s.state == leaderState {
 		minMatch := s.commitIndex // slowest follower
 		for j := range s.cluster {
 			if j == s.clusterIndex {
@@ -859,8 +863,9 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 	s.updateTerm(req.RPCMessage)
 
-	s.debugf("[RECV AppendEntries] from leader=%d term=%d prev=(%d,%d) commit=%d pba=%d blocks=%d",
-		req.LeaderId, req.Term, req.PrevLogIndex, req.PrevLogTerm, req.LeaderCommit, req.LeaderPbaSrc, req.LogBlockLength)
+	s.debugf("[RECV AppendEntries] from leader=%d term=%d prev=(%d,%d) commit=%d pba=0x%X blocks=%d entries=%d",
+		req.LeaderId, req.Term, req.PrevLogIndex, req.PrevLogTerm,
+		req.LeaderCommit, req.LeaderPbaSrc, req.LogBlockLength, req.NumEntries)
 
 	if req.Term == s.currentTerm && s.state == candidateState {
 		s.state = followerState
@@ -881,19 +886,83 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 	s.resetElectionTimeout()
 
-	if req.LeaderCommit > s.commitIndex {
-		// Storage-level block copy: data never crosses the network
+	// ---- PrevLog consistency check (Raft Log Matching Property) ----
+	// Verify that follower's log at PrevLogIndex matches PrevLogTerm.
+	if req.PrevLogIndex > 0 {
+		lastIdx := s.tailLogIndex - 1
+		if req.PrevLogIndex > lastIdx {
+			// Follower's log is too short
+			s.debugf("PrevLog check failed: follower lastIdx=%d < req.PrevLogIndex=%d",
+				lastIdx, req.PrevLogIndex)
+			return nil
+		}
+		if req.PrevLogIndex >= s.headLogIndex {
+			localTerm := s.log[s.logSlice(req.PrevLogIndex)].Term
+			if localTerm != req.PrevLogTerm {
+				// Term mismatch — leader must back off
+				s.debugf("PrevLog check failed: term mismatch at index %d (local=%d, req=%d)",
+					req.PrevLogIndex, localTerm, req.PrevLogTerm)
+				return nil
+			}
+		}
+		// If PrevLogIndex < headLogIndex, entry already compacted;
+		// we trust the leader since those entries were already committed.
+	}
+
+	// ---- Truncate conflicting suffix if needed ----
+	// If follower has entries beyond PrevLogIndex, truncate them
+	// because the leader's log takes precedence.
+	newTail := req.PrevLogIndex + 1
+	if newTail < s.tailLogIndex {
+		s.debugf("Truncating log: tailLogIndex %d -> %d", s.tailLogIndex, newTail)
+		// Trim s.log in memory: keep sentinel + entries up to newTail
+		keepCount := newTail - s.headLogIndex // number of real entries to keep
+		s.log = s.log[:1+keepCount]           // sentinel + keepCount entries
+		// Recompute tailSlot by replaying slot sizes from head
+		slot := s.headSlot
+		for idx := s.headLogIndex; idx < newTail; idx++ {
+			e := s.log[s.logSlice(idx)]
+			slots := slotsForEntry(len(e.Command))
+			slot = (slot + slots) % RING_SLOTS
+		}
+		s.tailSlot = slot
+		s.tailLogIndex = newTail
+	}
+
+	// ---- Perform storage-level block copy ----
+	if req.NumEntries > 0 && req.LeaderPbaSrc != 0 {
 		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength); err != nil {
 			s.warnf("doPBACopy failed: %v", err)
-			rsp.Success = false
 			return nil
 		}
 
-		// if err := s.syncFromNVMe(); err != nil {
-		// 	s.warnf("syncFromNVMe failed: %v", err)
-		// }
-		s.commitIndex = minUint64(req.LeaderCommit, s.tailLogIndex-1)
+		// After PBA copy succeeds, update ring buffer pointers.
+		// The data is now on disk at tailSlot position.
+		totalSlots := req.NumEntries * req.SlotsPerEntry
+		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
+		s.tailLogIndex += req.NumEntries
+
+		// Rebuild s.log from the newly written disk region.
+		// Read back the entries that were just copied to get them into memory.
+		startSlot := (s.tailSlot + RING_SLOTS - totalSlots) % RING_SLOTS
+		for i := uint64(0); i < req.NumEntries; i++ {
+			e, nextSlot := s.readEntryFromSlot(startSlot)
+			s.log = append(s.log, e)
+			startSlot = nextSlot
+		}
+
+		s.debugf("[PBA SYNC] tailLogIndex=%d tailSlot=%d logLen=%d",
+			s.tailLogIndex, s.tailSlot, len(s.log))
 	}
+
+	// ---- Update commit index ----
+	if req.LeaderCommit > s.commitIndex {
+		s.commitIndex = minUint64(req.LeaderCommit, s.tailLogIndex-1)
+		s.debugf("Updated commitIndex=%d", s.commitIndex)
+	}
+
+	// Persist updated header (ring pointers, commitIndex, etc.)
+	s.persistCircular(false, 0)
 
 	rsp.Success = true
 	return nil
@@ -1113,20 +1182,62 @@ func (s *Server) appendEntries() {
 				}
 			}
 
-			bytesToCopy := lenEntries * uint64(BLOCK_UNIT)
+			// Compute actual total slots for the entries to copy.
+			// Walk the log to sum up per-entry slot counts and check wrap-around.
+			var totalSlots uint64 = 0
+			var slotsPerEntry uint64 = 0
+			if lenEntries > 0 {
+				startSlot := (s.headSlot + (next - s.headLogIndex)) % RING_SLOTS
+				checkSlot := startSlot
+				for k := uint64(0); k < lenEntries; k++ {
+					logIdx := next + k
+					e := s.log[s.logSlice(logIdx)]
+					needed := slotsForEntry(len(e.Command))
+					totalSlots += needed
+					checkSlot = (checkSlot + needed) % RING_SLOTS
+				}
+				// For uniform-size entries, compute average slots per entry.
+				// Follower uses this to advance its ring pointers.
+				slotsPerEntry = (totalSlots + lenEntries - 1) / lenEntries
+
+				// Limit batch if it would wrap around the ring buffer.
+				// FIEMAP requires a contiguous file region for a single PBA lookup.
+				slotsUntilEnd := RING_SLOTS - startSlot
+				if totalSlots > slotsUntilEnd {
+					// Reduce lenEntries to fit before wrap-around
+					totalSlots = 0
+					lenEntries = 0
+					checkSlot = startSlot
+					for k := uint64(0); ; k++ {
+						logIdx := next + k
+						if logIdx > last {
+							break
+						}
+						e := s.log[s.logSlice(logIdx)]
+						needed := slotsForEntry(len(e.Command))
+						if totalSlots+needed > slotsUntilEnd {
+							break
+						}
+						totalSlots += needed
+						lenEntries++
+						checkSlot = (checkSlot + needed) % RING_SLOTS
+					}
+					if lenEntries > 0 {
+						slotsPerEntry = (totalSlots + lenEntries - 1) / lenEntries
+					}
+				}
+			}
+
+			bytesToCopy := totalSlots * uint64(BLOCK_UNIT)
 			var logBlockLength uint64 = 0
 			if bytesToCopy > 0 {
 				logBlockLength = (bytesToCopy + 512 - 1) / 512
 			}
 
-			// Test dummy data
-			// leaderPbaSrc := uint64(0xdeadbeef)
-			// logBlockLength = uint64(5678)
-
-			// get real pba
+			// Get real PBA from leader's ring buffer
 			var leaderPbaSrc uint64 = 0
 			if lenEntries > 0 {
-				pbaSrc, pbaBytes, err := s.leaderPBAForRange(next, lenEntries)
+				pbaSrc, pbaBytes, err := s.leaderPBAForRange(next, totalSlots)
 				if err != nil {
 					s.mu.Unlock()
 					s.warnf("leaderPBAForRange failed (follower=%d next=%d): %v",
@@ -1142,11 +1253,12 @@ func (s *Server) appendEntries() {
 				LeaderId:     leaderId,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
-				// Entries:       nil,
 				LeaderCommit: leaderCommit,
 
 				LeaderPbaSrc:   leaderPbaSrc,
 				LogBlockLength: logBlockLength,
+				NumEntries:     lenEntries,
+				SlotsPerEntry:  slotsPerEntry,
 			}
 
 			s.mu.Unlock()
@@ -1282,15 +1394,19 @@ func (s *Server) becomeLeader() {
 	}
 
 	if quorum == 0 {
-		for i := range s.cluster {
-			s.cluster[i].nextIndex = s.tailLogIndex + 1
-		}
-
 		s.debug("New leader.")
 		s.state = leaderState
 
+		// Append no-op entry first (Section 8, Raft paper)
 		s.log = append(s.log, Entry{Term: s.currentTerm, Command: nil})
 		s.persistCircular(true, 1)
+
+		// Set nextIndex AFTER no-op so followers start from the correct position
+		for i := range s.cluster {
+			s.cluster[i].nextIndex = s.tailLogIndex
+			s.cluster[i].matchIndex = 0
+		}
+
 		s.heartbeatTimeout = time.Now()
 	}
 }

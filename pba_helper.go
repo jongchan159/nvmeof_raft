@@ -14,36 +14,40 @@ import (
 const NVMEOF_DEVICE_PATH = "/dev/nvme0n1"
 
 // leaderPBAForRange resolves the physical block address for a contiguous range
-// of log entries starting at logical index `next` for `count` entries.
+// of ring buffer slots starting at logical index `next`.
 //
 // The leader calls this inside appendEntries() to fill LeaderPbaSrc in the RPC.
-// Assumes 1-slot entries (cmdLen fits within one 512B slot), which holds for
-// PBA metadata payloads (~64B). For larger payloads, slot tracking must be extended.
+// The caller pre-computes totalSlots (sum of slotsForEntry for each entry)
+// and ensures the range does not wrap around the ring buffer.
 //
 // Must be called with s.mu held.
-func (s *Server) leaderPBAForRange(next, count uint64) (pbaSrc uint64, nbytes uint64, err error) {
-	if count == 0 {
+func (s *Server) leaderPBAForRange(next, totalSlots uint64) (pbaSrc uint64, nbytes uint64, err error) {
+	if totalSlots == 0 {
 		return 0, 0, nil
 	}
 
 	// Compute on-disk slot number for logical index `next`.
-	// delta: how many entries ahead of headLogIndex is `next`
-	delta := next - s.headLogIndex
-	slot := (s.headSlot + delta) % RING_SLOTS
+	// delta: how many slots ahead of headSlot is the start of `next`
+	// We walk from headLogIndex to `next` to get exact slot offset.
+	slot := s.headSlot
+	for idx := s.headLogIndex; idx < next; idx++ {
+		e := s.log[s.logSlice(idx)]
+		needed := slotsForEntry(len(e.Command))
+		slot = (slot + needed) % RING_SLOTS
+	}
 
 	// File byte offset of that slot
 	logicalOff := int64(RING_OFFSET) + int64(slot)*BLOCK_UNIT
 
-	// Raw bytes = count entries * 1 slot each (1-slot entry assumption)
-	// Round up to 4KB for O_DIRECT alignment
-	rawBytes := count * uint64(BLOCK_UNIT)
+	// Raw bytes = totalSlots * BLOCK_UNIT, aligned to 4KB for O_DIRECT
+	rawBytes := totalSlots * uint64(BLOCK_UNIT)
 	nbytes = blockcopy.AlignUp(rawBytes)
 
 	// Resolve logical file offset -> physical block address via FIEMAP
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
 	seg, err := blockcopy.GetPBA(metaPath, logicalOff, nbytes)
 	if err != nil {
-		return 0, 0, fmt.Errorf("leaderPBAForRange(next=%d count=%d): %v", next, count, err)
+		return 0, 0, fmt.Errorf("leaderPBAForRange(next=%d totalSlots=%d): %v", next, totalSlots, err)
 	}
 
 	return seg.PBA, nbytes, nil

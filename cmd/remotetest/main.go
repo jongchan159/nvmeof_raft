@@ -30,11 +30,11 @@ func NewSimpleStateMachine() *SimpleStateMachine {
 func (sm *SimpleStateMachine) Apply(cmd []byte) ([]byte, error) {
 	cmdStr := string(cmd)
 	parts := strings.Split(cmdStr, " ")
-	
+
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
-	
+
 	switch parts[0] {
 	case "SET":
 		if len(parts) != 3 {
@@ -42,7 +42,7 @@ func (sm *SimpleStateMachine) Apply(cmd []byte) ([]byte, error) {
 		}
 		sm.data[parts[1]] = parts[2]
 		return []byte(fmt.Sprintf("OK: SET %s=%s", parts[1], parts[2])), nil
-		
+
 	case "GET":
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("GET requires key")
@@ -52,7 +52,7 @@ func (sm *SimpleStateMachine) Apply(cmd []byte) ([]byte, error) {
 			return []byte("NOT_FOUND"), nil
 		}
 		return []byte(value), nil
-		
+
 	default:
 		return nil, fmt.Errorf("unknown command: %s", parts[0])
 	}
@@ -65,18 +65,18 @@ func main() {
 	peers := flag.String("peers", "", "Peer addresses (comma-separated, e.g., node1:7001,node2:7002,node3:7003)")
 	metadataDir := flag.String("metadata-dir", "./metadata", "Metadata directory for Raft logs")
 	debug := flag.Bool("debug", false, "Enable debug logging")
-	
+
 	flag.Parse()
 
 	// Validate required flags
 	if *nodeID == 0 {
 		log.Fatal("Error: --id is required (must be non-zero)")
 	}
-	
+
 	if *address == "" {
 		log.Fatal("Error: --address is required (e.g., localhost:7001)")
 	}
-	
+
 	if *peers == "" {
 		log.Fatal("Error: --peers is required (e.g., node1:7001,node2:7002,node3:7003)")
 	}
@@ -88,26 +88,26 @@ func main() {
 	peerList := strings.Split(*peers, ",")
 	var clusterConfig []nvmeof_raft.ClusterMember
 	var clusterIndex int = -1
-	
+
 	for i, peerAddr := range peerList {
 		peerAddr = strings.TrimSpace(peerAddr)
-		
+
 		// Assign node ID based on position (starting from 1)
 		// Or try to match with provided node ID
 		nodeIDForPeer := uint64(i + 1)
-		
+
 		// If this peer matches our address, this is our node
 		if peerAddr == *address {
 			nodeIDForPeer = *nodeID
 			clusterIndex = i
 		}
-		
+
 		clusterConfig = append(clusterConfig, nvmeof_raft.ClusterMember{
 			Id:      nodeIDForPeer,
 			Address: peerAddr,
 		})
 	}
-	
+
 	// If we didn't find ourselves in the peer list, add ourselves
 	if clusterIndex == -1 {
 		clusterIndex = len(clusterConfig)
@@ -135,7 +135,7 @@ func main() {
 		*metadataDir,
 		clusterIndex,
 	)
-	
+
 	// Enable debug if requested
 	server.Debug = *debug
 
@@ -160,9 +160,9 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Println("Starting Raft server...")
-	
+
 	server.Start()
-	
+
 	fmt.Println("✓ Raft server started successfully")
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop the server")
@@ -177,7 +177,7 @@ func main() {
 	fmt.Println("==================================================")
 	fmt.Println("Shutting down Raft server...")
 	fmt.Println("==================================================")
-	
+
 	// Graceful shutdown
 	// Set done flag and shutdown HTTP server
 	// Note: Server.Stop() may not exist, so we handle shutdown manually
