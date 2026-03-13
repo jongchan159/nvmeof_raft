@@ -126,7 +126,7 @@ type PBASegment struct {
 	Len uint64 // length in bytes
 }
 
-// l_get_pba retrieves the physical block address for a logical offset in a file.
+// L_get_pba retrieves the physical block address for a logical offset in a file.
 // Wraps c_get_pba via FIEMAP ioctl.
 //
 // Parameters:
@@ -136,10 +136,10 @@ type PBASegment struct {
 //	length   - byte length of the region to query
 //
 // Returns PBASegment and nil error on success.
-func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error) {
+func L_get_pba(filePath string, logical int64, length uint64) (PBASegment, error) {
 	fd, err := syscall.Open(filePath, syscall.O_RDONLY, 0)
 	if err != nil {
-		return PBASegment{}, fmt.Errorf("l_get_pba: open %s: %v", filePath, err)
+		return PBASegment{}, fmt.Errorf("L_get_pba: open %s: %v", filePath, err)
 	}
 	defer syscall.Close(fd)
 
@@ -154,7 +154,7 @@ func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 		(*C.size_t)(unsafe.Pointer(&outLen)),
 	)
 	if ret != 0 {
-		return PBASegment{}, fmt.Errorf("l_get_pba: c_get_pba failed (logical=%d, len=%d)", logical, length)
+		return PBASegment{}, fmt.Errorf("L_get_pba: c_get_pba failed (logical=%d, len=%d)", logical, length)
 	}
 
 	return PBASegment{
@@ -163,7 +163,7 @@ func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 	}, nil
 }
 
-// r_write_pba copies nbytes from pbaSrc to pbaDst on the block device at devicePath.
+// R_write_pba copies nbytes from pbaSrc to pbaDst on the block device at devicePath.
 // Wraps c_write_pba using O_DIRECT aligned I/O.
 //
 // Parameters:
@@ -174,10 +174,10 @@ func l_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 //	nbytes     - number of bytes to copy (rounded up to ALIGN=4096 internally)
 //
 // Returns nil on success.
-func r_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
+func R_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
 	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
 	if err != nil {
-		return fmt.Errorf("r_write_pba: open %s: %v", devicePath, err)
+		return fmt.Errorf("R_write_pba: open %s: %v", devicePath, err)
 	}
 	defer syscall.Close(fd)
 
@@ -188,7 +188,7 @@ func r_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64)
 		C.size_t(nbytes),
 	)
 	if ret != 0 {
-		return fmt.Errorf("r_write_pba: c_write_pba failed (src=%d, dst=%d, nbytes=%d)", pbaSrc, pbaDst, nbytes)
+		return fmt.Errorf("R_write_pba: c_write_pba failed (src=%d, dst=%d, nbytes=%d)", pbaSrc, pbaDst, nbytes)
 	}
 	return nil
 }

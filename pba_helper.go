@@ -45,7 +45,7 @@ func (s *Server) leaderPBAForRange(next, totalSlots uint64) (pbaSrc uint64, nbyt
 
 	// Resolve logical file offset -> physical block address via FIEMAP
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
-	seg, err := blockcopy.l_get_pba(metaPath, logicalOff, nbytes)
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
 	if err != nil {
 		return 0, 0, fmt.Errorf("leaderPBAForRange(next=%d totalSlots=%d): %v", next, totalSlots, err)
 	}
@@ -62,7 +62,7 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 	logicalOff := int64(RING_OFFSET) + int64(s.tailSlot)*BLOCK_UNIT
 
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
-	seg, err := blockcopy.l_get_pba(metaPath, logicalOff, nbytes)
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
 	if err != nil {
 		return 0, fmt.Errorf("followerPBAForNext(tailSlot=%d): %v", s.tailSlot, err)
 	}
@@ -74,7 +74,7 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 //
 // Flow:
 //  1. Resolve follower's destination PBA (tailSlot position)
-//  2. Call r_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
+//  2. Call R_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
 //  3. Storage node copies the block locally — no log data crosses the network
 //
 // Must be called with s.mu held.
@@ -94,8 +94,8 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 	}
 
 	// Perform storage-level copy via NVMe-oF device
-	if err := blockcopy.r_write_pba(NVMEOF_DEVICE_PATH, leaderPbaSrc, pbaDst, nbytes); err != nil {
-		return fmt.Errorf("doPBACopy: r_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
+	if err := blockcopy.R_write_pba(NVMEOF_DEVICE_PATH, leaderPbaSrc, pbaDst, nbytes); err != nil {
+		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
 			leaderPbaSrc, pbaDst, nbytes, err)
 	}
 
