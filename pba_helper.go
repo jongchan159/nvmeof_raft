@@ -14,30 +14,19 @@ import (
 const NVMEOF_DEVICE_PATH = "/dev/nvme0n1"
 
 // leaderPBAForRange resolves the physical block address for a contiguous range
-// of ring buffer slots starting at logical index `next`.
+// of ring buffer slots starting at `startSlot` for `totalSlots` slots.
 //
-// The leader calls this inside appendEntries() to fill LeaderPbaSrc in the RPC.
-// The caller pre-computes totalSlots (sum of slotsForEntry for each entry)
-// and ensures the range does not wrap around the ring buffer.
+// The caller (appendEntries) pre-computes startSlot from logSlotMap and
+// ensures the range does not wrap around the ring buffer boundary.
 //
 // Must be called with s.mu held.
-func (s *Server) leaderPBAForRange(next, totalSlots uint64) (pbaSrc uint64, nbytes uint64, err error) {
+func (s *Server) leaderPBAForRange(startSlot, totalSlots uint64) (pbaSrc uint64, nbytes uint64, err error) {
 	if totalSlots == 0 {
 		return 0, 0, nil
 	}
 
-	// Compute on-disk slot number for logical index `next`.
-	// delta: how many slots ahead of headSlot is the start of `next`
-	// We walk from headLogIndex to `next` to get exact slot offset.
-	slot := s.headSlot
-	for idx := s.headLogIndex; idx < next; idx++ {
-		e := s.log[s.logSlice(idx)]
-		needed := slotsForEntry(len(e.Command))
-		slot = (slot + needed) % RING_SLOTS
-	}
-
-	// File byte offset of that slot
-	logicalOff := int64(RING_OFFSET) + int64(slot)*BLOCK_UNIT
+	// File byte offset of the start slot
+	logicalOff := int64(RING_OFFSET) + int64(startSlot)*BLOCK_UNIT
 
 	// Raw bytes = totalSlots * BLOCK_UNIT, aligned to 4KB for O_DIRECT
 	rawBytes := totalSlots * uint64(BLOCK_UNIT)
@@ -45,9 +34,10 @@ func (s *Server) leaderPBAForRange(next, totalSlots uint64) (pbaSrc uint64, nbyt
 
 	// Resolve logical file offset -> physical block address via FIEMAP
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
-	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+	seg, err := blockcopy.GetPBA(metaPath, logicalOff, nbytes)
 	if err != nil {
-		return 0, 0, fmt.Errorf("leaderPBAForRange(next=%d totalSlots=%d): %v", next, totalSlots, err)
+		return 0, 0, fmt.Errorf("leaderPBAForRange(startSlot=%d totalSlots=%d): %v",
+			startSlot, totalSlots, err)
 	}
 
 	return seg.PBA, nbytes, nil
@@ -62,7 +52,7 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 	logicalOff := int64(RING_OFFSET) + int64(s.tailSlot)*BLOCK_UNIT
 
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
-	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+	seg, err := blockcopy.GetPBA(metaPath, logicalOff, nbytes)
 	if err != nil {
 		return 0, fmt.Errorf("followerPBAForNext(tailSlot=%d): %v", s.tailSlot, err)
 	}
@@ -74,7 +64,7 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 //
 // Flow:
 //  1. Resolve follower's destination PBA (tailSlot position)
-//  2. Call R_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
+//  2. Call WritePBA(device, leaderPbaSrc, followerPbaDst, nbytes)
 //  3. Storage node copies the block locally — no log data crosses the network
 //
 // Must be called with s.mu held.
@@ -94,8 +84,8 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 	}
 
 	// Perform storage-level copy via NVMe-oF device
-	if err := blockcopy.R_write_pba(NVMEOF_DEVICE_PATH, leaderPbaSrc, pbaDst, nbytes); err != nil {
-		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
+	if err := blockcopy.WritePBA(NVMEOF_DEVICE_PATH, leaderPbaSrc, pbaDst, nbytes); err != nil {
+		return fmt.Errorf("doPBACopy: WritePBA(src=0x%X dst=0x%X nbytes=%d): %v",
 			leaderPbaSrc, pbaDst, nbytes, err)
 	}
 
