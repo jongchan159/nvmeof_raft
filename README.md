@@ -34,6 +34,8 @@ go build -o raft_server ./cmd
  or directry excute
 `go build -o raft_server`
 
+`go build -tags raft -o raft_server ./cmd/remotetest`
+
 2. Run Raft Cluster
 - setting
 	eternity4: storage node
