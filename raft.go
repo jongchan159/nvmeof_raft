@@ -801,6 +801,7 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 var ErrApplyToLeader = errors.New("Cannot apply message to follower, apply to leader.")
 
 func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
+	s.debugf("[APPLY] enter Apply..")
 	s.mu.Lock()
 	if s.state != leaderState {
 		s.mu.Unlock()
@@ -823,6 +824,7 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 		}
 	}
 
+	s.debugf("[APPLY] make result..")
 	resultChans := make([]chan ApplyResult, len(commands))
 	for i, command := range commands {
 		resultChans[i] = make(chan ApplyResult)
@@ -834,10 +836,13 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 		s.tailLogIndex++
 	}
 
+	s.debugf("[APPLY] calling persistCircular..")
 	s.persistCircular(true, len(commands))
 	s.mu.Unlock()
 
+	s.debugf("[APPLY] calling appendEntries...") // 추가
 	s.appendEntries()
+	s.debugf("[APPLY] appendEntries returned, waiting for results...") // 추가
 
 	results := make([]ApplyResult, len(commands))
 	var wg sync.WaitGroup
