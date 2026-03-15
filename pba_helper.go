@@ -109,22 +109,21 @@ func partitionStartBytes(metadataDir string) uint64 {
 func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
 
-	// Read the 4KB-aligned block containing the header slot
 	logicalOff := int64(RING_OFFSET) + int64(headerSlot)*BLOCK_UNIT
-	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, PAGE_SIZE)
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, uint64(BLOCK_UNIT))
 	if err != nil {
 		panic(fmt.Sprintf("readEntryDirect: L_get_pba slot %d: %v", headerSlot, err))
 	}
-	devicePBA := seg.PBA + s.partitionOffsetBytes
+	rawPBA := seg.PBA + s.partitionOffsetBytes
 
-	// O_DIRECT read from device
-	buf := blockcopy.DirectRead(s.devicePath, devicePBA, PAGE_SIZE)
+	// Align PBA down to 4KB boundary for O_DIRECT
+	alignedPBA := rawPBA &^ (PAGE_SIZE - 1)    // round down to 4KB
+	offsetInPage := int64(rawPBA - alignedPBA) // where our data starts within the 4KB block
 
-	// Parse header from the read buffer
-	// The header is at the beginning of the 4KB block
-	slotInPage := (logicalOff % PAGE_SIZE)
-	header := buf[slotInPage : slotInPage+BLOCK_UNIT]
+	buf := blockcopy.DirectRead(s.devicePath, alignedPBA, PAGE_SIZE)
 
+	// Parse header at the correct offset within the 4KB block
+	header := buf[offsetInPage : offsetInPage+BLOCK_UNIT]
 	term := binary.LittleEndian.Uint64(header[0:])
 	cmdLen := binary.LittleEndian.Uint64(header[8:])
 	numSlots := binary.LittleEndian.Uint64(header[16:])
@@ -135,13 +134,16 @@ func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
 		for i := uint64(1); i < numSlots; i++ {
 			pSlot := (headerSlot + i) % RING_SLOTS
 			pOff := int64(RING_OFFSET) + int64(pSlot)*BLOCK_UNIT
-			pSeg, err := blockcopy.L_get_pba(metaPath, pOff, PAGE_SIZE)
+			pSeg, err := blockcopy.L_get_pba(metaPath, pOff, uint64(BLOCK_UNIT))
 			if err != nil {
-				panic(fmt.Sprintf("readEntryDirect: L_get_pba payload slot %d: %v", pSlot, err))
+				panic(fmt.Sprintf("readEntryDirect: payload slot %d: %v", pSlot, err))
 			}
-			pBuf := blockcopy.DirectRead(s.devicePath, pSeg.PBA+s.partitionOffsetBytes, PAGE_SIZE)
-			pSlotInPage := (pOff % PAGE_SIZE)
-			copied += copy(cmd[copied:], pBuf[pSlotInPage:pSlotInPage+BLOCK_UNIT])
+			pRawPBA := pSeg.PBA + s.partitionOffsetBytes
+			pAlignedPBA := pRawPBA &^ (PAGE_SIZE - 1)
+			pOffInPage := int64(pRawPBA - pAlignedPBA)
+
+			pBuf := blockcopy.DirectRead(s.devicePath, pAlignedPBA, PAGE_SIZE)
+			copied += copy(cmd[copied:], pBuf[pOffInPage:pOffInPage+BLOCK_UNIT])
 		}
 	}
 
