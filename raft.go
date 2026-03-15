@@ -519,25 +519,25 @@ func (s *Server) advanceCommitIndex() {
 	}
 
 	// (3) Leader: trim old entries no follower needs
-	if s.state == leaderState {
-		minNeeded := s.tailLogIndex
-		for j := range s.cluster {
-			if j == s.clusterIndex {
-				continue
-			}
-			if s.cluster[j].nextIndex < minNeeded {
-				minNeeded = s.cluster[j].nextIndex
-			}
-		}
-		minNeeded = minUint64(minNeeded, s.lastApplied)
-		oldest = s.oldestLogIndex()
-		if minNeeded > oldest {
-			trimCount := minNeeded - oldest
-			if trimCount > 0 && uint64(len(s.log)-1) > trimCount {
-				s.log = append(s.log[:1], s.log[1+trimCount:]...)
-			}
-		}
-	}
+	// if s.state == leaderState {
+	// 	minNeeded := s.tailLogIndex
+	// 	for j := range s.cluster {
+	// 		if j == s.clusterIndex {
+	// 			continue
+	// 		}
+	// 		if s.cluster[j].nextIndex < minNeeded {
+	// 			minNeeded = s.cluster[j].nextIndex
+	// 		}
+	// 	}
+	// 	minNeeded = minUint64(minNeeded, s.commitIndex)
+	// 	oldest = s.oldestLogIndex()
+	// 	if minNeeded > oldest {
+	// 		trimCount := minNeeded - oldest
+	// 		if trimCount > 0 && uint64(len(s.log)-1) > trimCount {
+	// 			s.log = append(s.log[:1], s.log[1+trimCount:]...)
+	// 		}
+	// 	}
+	// }
 }
 
 func (s *Server) ensureLog() {
