@@ -1054,7 +1054,7 @@ func (s *Server) becomeLeader() {
 		s.persistCircular(true, 1)
 
 		for i := range s.cluster {
-			s.cluster[i].nextIndex = s.tailLogIndex
+			s.cluster[i].nextIndex = s.tailLogIndex - 1
 			s.cluster[i].matchIndex = 0
 		}
 		s.heartbeatTimeout = time.Now()
