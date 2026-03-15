@@ -443,10 +443,12 @@ func (s *Server) restoreCircular() {
 	s.setVotedFor(binary.LittleEndian.Uint64(header[8:]))
 	//s.tailLogIndex = binary.LittleEndian.Uint64(header[16:])
 	//s.tailSlot = binary.LittleEndian.Uint64(header[24:])
-	s.commitIndex = binary.LittleEndian.Uint64(header[32:])
-	s.lastApplied = binary.LittleEndian.Uint64(header[40:])
+	// s.commitIndex = binary.LittleEndian.Uint64(header[32:])
+	// s.lastApplied = binary.LittleEndian.Uint64(header[40:])
 	s.tailLogIndex = 1
 	s.tailSlot = 0
+	s.commitIndex = 0
+	s.lastApplied = 0
 
 	// On restart, start with empty in-memory log.
 	// Leader election will resync all entries via appendEntries.
@@ -501,7 +503,7 @@ func (s *Server) advanceCommitIndex() {
 	oldest := s.oldestLogIndex()
 	for s.lastApplied >= oldest &&
 		s.lastApplied < s.tailLogIndex &&
-		s.lastApplied < s.commitIndex {
+		s.lastApplied <= s.commitIndex {
 
 		logEntry := s.log[s.logSlice(s.lastApplied)]
 		if len(logEntry.Command) > 0 {
