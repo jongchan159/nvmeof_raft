@@ -722,9 +722,15 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		oldest := s.oldestLogIndex()
 		keepCount := newTail - oldest
 		s.log = s.log[:1+keepCount]
+		// Rewind tailSlot to match the truncated position
+		if sr, ok := s.logSlotMap[newTail-1]; ok {
+			s.tailSlot = (sr.start + sr.numSlots) % RING_SLOTS
+		}
+		// Clean up slot map entries beyond newTail
+		for idx := newTail; idx < s.tailLogIndex; idx++ {
+			delete(s.logSlotMap, idx)
+		}
 		s.tailLogIndex = newTail
-		// tailSlot: follower doesn't precisely track per-entry slots,
-		// but PBA copy will write at current tailSlot position anyway.
 	}
 
 	// Storage-level block copy
@@ -745,6 +751,10 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		for i := uint64(0); i < req.NumEntries; i++ {
 			e, nextSlot := s.readEntryFromSlot(readSlot)
 			s.log = append(s.log, e)
+			logIdx := s.tailLogIndex - req.NumEntries + i
+			// Follower: track slot mapping for truncation
+			needed := slotsForEntry(len(e.Command))
+			s.logSlotMap[logIdx] = slotRange{start: readSlot, numSlots: needed}
 			readSlot = nextSlot
 		}
 
