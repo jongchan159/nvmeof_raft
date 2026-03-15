@@ -875,11 +875,14 @@ func (s *Server) appendEntries() {
 				s.cluster[fi].nextIndex = next
 			}
 
-			prevLogIndex := next - 1
+			var prevLogIndex uint64
 			var prevLogTerm uint64
-			oldest := s.oldestLogIndex()
-			if prevLogIndex >= oldest && prevLogIndex < s.tailLogIndex {
-				prevLogTerm = s.log[s.logSlice(prevLogIndex)].Term
+			if next > 0 {
+				prevLogIndex = next - 1
+				oldest := s.oldestLogIndex()
+				if prevLogIndex >= oldest && prevLogIndex < s.tailLogIndex {
+					prevLogTerm = s.log[s.logSlice(prevLogIndex)].Term
+				}
 			}
 
 			var lenEntries uint64
