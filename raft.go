@@ -749,15 +749,15 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			return nil
 		}
 
-		// Reopen fd to bypass stale page cache after device-level PBA copy
-		s.fd.Close()
-		var err error
-		s.fd, err = os.OpenFile(
-			path.Join(s.metadataDir, s.Metadata()),
-			os.O_SYNC|os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			panic(err)
-		}
+		// // Reopen fd to bypass stale page cache after device-level PBA copy
+		// s.fd.Close()
+		// var err error
+		// s.fd, err = os.OpenFile(
+		// 	path.Join(s.metadataDir, s.Metadata()),
+		// 	os.O_SYNC|os.O_CREATE|os.O_RDWR, 0644)
+		// if err != nil {
+		// 	panic(err)
+		// }
 
 		// Update ring pointers
 		totalSlots := req.NumEntries * req.SlotsPerEntry
@@ -765,11 +765,11 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
 		s.tailLogIndex += req.NumEntries
 
-		// Read back entries from disk into s.log
+		// Read back entries DIRECTLY from device (bypass page cache)
 		readSlot := oldTailSlot
 		for i := uint64(0); i < req.NumEntries; i++ {
-			logIdx := s.tailLogIndex - req.NumEntries + i // 이미 tailLogIndex 갱신 후
-			e, nextSlot := s.readEntryFromSlot(readSlot)
+			logIdx := s.tailLogIndex - req.NumEntries + i
+			e, nextSlot := s.readEntryDirect(readSlot)
 			s.debugf("[READBACK] slot=%d term=%d cmdLen=%d", readSlot, e.Term, len(e.Command))
 			s.log = append(s.log, e)
 			needed := slotsForEntry(len(e.Command))
