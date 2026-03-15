@@ -743,8 +743,13 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			return nil
 		}
 
-		// Update ring pointers
+		// Invalidate page cache so readback sees the PBA-copied data
 		totalSlots := req.NumEntries * req.SlotsPerEntry
+		cacheOffset := slotOffset(s.tailSlot)
+		cacheLen := int64(totalSlots) * BLOCK_UNIT
+		s.invalidateCache(cacheOffset, cacheLen)
+
+		// Update ring pointers
 		oldTailSlot := s.tailSlot
 		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
 		s.tailLogIndex += req.NumEntries

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nvmeof_raft/blockcopy"
 	"path/filepath"
+	"syscall"
 )
 
 // NVMEOF_DEVICE_PATH is the NVMe-oF block device shared by all computing nodes.
@@ -92,4 +93,16 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 	s.debugf("[PBA COPY] src=0x%X dst=0x%X nbytes=%d blocks=%d",
 		leaderPbaSrc, pbaDst, nbytes, logBlockLength)
 	return nil
+}
+
+func (s *Server) invalidateCache(offset int64, length int64) {
+	// POSIX_FADV_DONTNEED: 해당 영역의 페이지 캐시를 drop
+	syscall.Syscall6(
+		syscall.SYS_FADVISE64,
+		uintptr(s.fd.Fd()),
+		uintptr(offset),
+		uintptr(length),
+		uintptr(4), // POSIX_FADV_DONTNEED = 4
+		0, 0,
+	)
 }
