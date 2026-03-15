@@ -225,9 +225,9 @@ func DirectRead(devicePath string, pba uint64, nbytes uint64) []byte {
 	}
 	defer C.free(buf)
 
-	r := C.pread(C.int(fd), buf, C.size_t(aligned), C.off_t(pba))
+	r, err := C.pread(C.int(fd), buf, C.size_t(aligned), C.off_t(pba))
 	if r != C.ssize_t(aligned) {
-		panic(fmt.Sprintf("DirectRead: pread at 0x%X returned %d (errno may apply)", pba, r))
+		panic(fmt.Sprintf("DirectRead: pread at 0x%X returned %d, err=%v", pba, r, err))
 	}
 
 	result := C.GoBytes(buf, C.int(aligned))
