@@ -722,11 +722,14 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		oldest := s.oldestLogIndex()
 		keepCount := newTail - oldest
 		s.log = s.log[:1+keepCount]
-		// Rewind tailSlot to match the truncated position
+		// Rewind tailSlot: walk from slot 0 through kept entries
 		if sr, ok := s.logSlotMap[newTail-1]; ok {
 			s.tailSlot = (sr.start + sr.numSlots) % RING_SLOTS
+		} else if keepCount == 0 {
+			// No entries left — reset tailSlot to 0
+			s.tailSlot = 0
 		}
-		// Clean up slot map entries beyond newTail
+		// Clean up slot map
 		for idx := newTail; idx < s.tailLogIndex; idx++ {
 			delete(s.logSlotMap, idx)
 		}
@@ -749,10 +752,9 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		// Read back entries from disk into s.log
 		readSlot := oldTailSlot
 		for i := uint64(0); i < req.NumEntries; i++ {
+			logIdx := s.tailLogIndex - req.NumEntries + i // 이미 tailLogIndex 갱신 후
 			e, nextSlot := s.readEntryFromSlot(readSlot)
 			s.log = append(s.log, e)
-			logIdx := s.tailLogIndex - req.NumEntries + i
-			// Follower: track slot mapping for truncation
 			needed := slotsForEntry(len(e.Command))
 			s.logSlotMap[logIdx] = slotRange{start: readSlot, numSlots: needed}
 			readSlot = nextSlot
