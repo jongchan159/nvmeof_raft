@@ -66,6 +66,8 @@ func main() {
 	metadataDir := flag.String("metadata-dir", "./metadata", "Metadata directory for Raft logs")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	devicePath := flag.String("device", "/dev/nvme0n1", "NVMe-oF block device path")
+	partOffset := flag.Uint64("partition-offset", 0,
+		"Partition start offset in bytes (sector_start * 512)")
 
 	flag.Parse()
 
@@ -136,6 +138,7 @@ func main() {
 		*metadataDir,
 		clusterIndex,
 		*devicePath,
+		partOffset,
 	)
 
 	// Enable debug if requested

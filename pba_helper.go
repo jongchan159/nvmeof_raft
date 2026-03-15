@@ -35,13 +35,12 @@ func (s *Server) leaderPBAForRange(startSlot, totalSlots uint64) (pbaSrc uint64,
 
 	// Resolve logical file offset -> physical block address via FIEMAP
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
-	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
-	if err != nil {
-		return 0, 0, fmt.Errorf("leaderPBAForRange(startSlot=%d totalSlots=%d): %v",
-			startSlot, totalSlots, err)
-	}
-
-	return seg.PBA, nbytes, nil
+    seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+    if err != nil {
+        return 0, 0, ...
+    }
+    // Convert partition-relative PBA to device-absolute PBA
+    return seg.PBA + s.partitionOffsetBytes, nbytes, nil
 }
 
 // followerPBAForNext resolves the physical block address of the follower's
@@ -54,11 +53,11 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
 	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
-	if err != nil {
-		return 0, fmt.Errorf("followerPBAForNext(tailSlot=%d): %v", s.tailSlot, err)
-	}
-
-	return seg.PBA, nil
+    if err != nil {
+        return 0, ...
+    }
+    // Convert partition-relative PBA to device-absolute PBA
+    return seg.PBA + s.partitionOffsetBytes, nil
 }
 
 // doPBACopy performs the storage-level block copy on behalf of the follower.
@@ -105,4 +104,13 @@ func (s *Server) invalidateCache(offset int64, length int64) {
 		uintptr(4), // POSIX_FADV_DONTNEED = 4
 		0, 0,
 	)
+}
+
+// partitionStartBytes returns the byte offset where the partition begins
+// on the whole device. Reads from /sys/class/block/<part>/start.
+func partitionStartBytes(metadataDir string) uint64 {
+    // Find which partition device the metadata dir is on
+    // e.g., /dev/nvme0n1p4 → start sector from /sys/class/block/nvme0n1p4/start
+    // For now, pass as a server config parameter
+    return 0 // placeholder
 }
