@@ -429,7 +429,7 @@ func (s *Server) restoreCircular() {
 		s.tailLogIndex = 1
 		s.tailSlot = 0
 		s.commitIndex = 0
-		s.lastApplied = 0
+		s.lastApplied = 1
 		s.log = nil
 		s.ensureLog()
 		s.initSlotStates()
@@ -448,7 +448,7 @@ func (s *Server) restoreCircular() {
 	s.tailLogIndex = 1
 	s.tailSlot = 0
 	s.commitIndex = 0
-	s.lastApplied = 0
+	s.lastApplied = 1
 
 	// On restart, start with empty in-memory log.
 	// Leader election will resync all entries via appendEntries.
