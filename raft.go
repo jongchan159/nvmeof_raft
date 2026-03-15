@@ -1005,10 +1005,11 @@ func (s *Server) appendEntries() {
 			}
 
 			if rsp.Success {
-				s.cluster[fi].nextIndex = maxUint64(req.PrevLogIndex+lenEntries+1, 1)
+				newNext := maxUint64(req.PrevLogIndex+lenEntries+1, 1)
+				if newNext > s.cluster[fi].nextIndex {
+					s.cluster[fi].nextIndex = newNext
+				}
 				s.cluster[fi].matchIndex = s.cluster[fi].nextIndex - 1
-				s.debugf("Accepted by %d. Next:%d Match:%d",
-					s.cluster[fi].Id, s.cluster[fi].nextIndex, s.cluster[fi].matchIndex)
 			} else {
 				s.cluster[fi].nextIndex = maxUint64(s.cluster[fi].nextIndex-1, 1)
 				s.debugf("Back off to %d for %d.", s.cluster[fi].nextIndex, s.cluster[fi].Id)
