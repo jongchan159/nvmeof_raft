@@ -219,7 +219,7 @@ func DirectRead(devicePath string, pba uint64, nbytes uint64) []byte {
 
 	// posix_memalign: allocate 4KB-aligned buffer
 	var buf unsafe.Pointer
-	ret := C.posix_memalign(&buf, C.size_t(ALIGN), C.size_t(aligned))
+	ret := C.posix_memalign(&buf, C.size_t(C.ALIGN), C.size_t(aligned))
 	if ret != 0 {
 		panic(fmt.Sprintf("DirectRead: posix_memalign failed: %d", ret))
 	}
