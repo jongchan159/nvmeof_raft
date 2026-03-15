@@ -579,9 +579,10 @@ func NewServer(
 		clusterIndex:         clusterIndex,
 		devicePath:           devicePath,
 		partitionOffsetBytes: partitionOffsetBytes,
-		heartbeatMs:          300,
-		mu:                   sync.Mutex{},
-		logSlotMap:           make(map[uint64]slotRange),
+
+		heartbeatMs: 300,
+		mu:          sync.Mutex{},
+		logSlotMap:  make(map[uint64]slotRange),
 	}
 	srv.ringNotFull = sync.NewCond(&srv.mu)
 	return srv

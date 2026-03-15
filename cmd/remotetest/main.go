@@ -138,7 +138,7 @@ func main() {
 		*metadataDir,
 		clusterIndex,
 		*devicePath,
-		partOffset,
+		*partOffset,
 	)
 
 	// Enable debug if requested
