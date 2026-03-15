@@ -423,7 +423,7 @@ func (s *Server) restoreCircular() {
 	if err == io.EOF || err == io.ErrUnexpectedEOF || n < HEADER_SIZE {
 		s.currentTerm = 0
 		s.setVotedFor(0)
-		s.tailLogIndex = 0
+		s.tailLogIndex = 1
 		s.tailSlot = 0
 		s.commitIndex = 0
 		s.lastApplied = 0
@@ -442,7 +442,7 @@ func (s *Server) restoreCircular() {
 	//s.tailSlot = binary.LittleEndian.Uint64(header[24:])
 	s.commitIndex = binary.LittleEndian.Uint64(header[32:])
 	s.lastApplied = binary.LittleEndian.Uint64(header[40:])
-	s.tailLogIndex = 0
+	s.tailLogIndex = 1
 	s.tailSlot = 0
 
 	// On restart, start with empty in-memory log.
