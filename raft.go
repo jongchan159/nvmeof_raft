@@ -501,7 +501,7 @@ func (s *Server) advanceCommitIndex() {
 
 	// (2) Apply committed entries to state machine
 	oldest := s.oldestLogIndex()
-	s.debugf("[APPLY CHECK] lastApplied=%d oldest=%d tailLogIndex=%d commitIndex=%d logLen=%d",
+	//s.debugf("[APPLY CHECK] lastApplied=%d oldest=%d tailLogIndex=%d commitIndex=%d logLen=%d",
 		s.lastApplied, oldest, s.tailLogIndex, s.commitIndex, len(s.log)-1)
 	for s.lastApplied >= oldest &&
 		s.lastApplied < s.tailLogIndex &&
