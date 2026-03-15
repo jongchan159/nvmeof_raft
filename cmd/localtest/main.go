@@ -12,6 +12,31 @@ type DummySM struct{}
 
 func (d DummySM) Apply(cmd []byte) ([]byte, error) { return []byte("ok"), nil }
 
+// ============================================================
+// Test helpers
+// ============================================================
+func (s *Server) ForceLeaderForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = leaderState
+	s.initSlotStates()
+	for i := range s.cluster {
+		s.cluster[i].nextIndex = s.tailLogIndex
+		s.cluster[i].matchIndex = 0
+	}
+}
+
+func (s *Server) TriggerAppendEntriesOnceForTest() {
+	s.appendEntries()
+}
+
+func (s *Server) ForceFollowerNoElectionForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = followerState
+	s.electionTimeout = time.Now().Add(24 * time.Hour)
+}
+
 func main() {
 	cluster := []nvmeof_raft.ClusterMember{
 		{Id: 1, Address: "127.0.0.1:9001"},

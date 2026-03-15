@@ -322,29 +322,6 @@ func (s *Server) writeEntryToRing(e Entry) (start uint64, numSlots uint64) {
 	return startSlot, needed
 }
 
-// readEntryFromSlot reads one entry starting at headerSlot.
-func (s *Server) readEntryFromSlot(headerSlot uint64) (Entry, uint64) {
-	var header [BLOCK_UNIT]byte
-	s.fd.Seek(slotOffset(headerSlot), 0)
-	s.fd.Read(header[:])
-
-	term := binary.LittleEndian.Uint64(header[0:])
-	cmdLen := binary.LittleEndian.Uint64(header[8:])
-	numSlots := binary.LittleEndian.Uint64(header[16:])
-
-	cmd := make([]byte, cmdLen)
-	copied := 0
-	for i := uint64(1); i < numSlots; i++ {
-		slot := (headerSlot + i) % RING_SLOTS
-		var payload [BLOCK_UNIT]byte
-		s.fd.Seek(slotOffset(slot), 0)
-		s.fd.Read(payload[:])
-		copied += copy(cmd[copied:], payload[:])
-	}
-
-	return Entry{Term: term, Command: cmd}, (headerSlot + numSlots) % RING_SLOTS
-}
-
 // ============================================================
 // Persist / Restore
 // ============================================================
@@ -1173,29 +1150,4 @@ func (s *Server) Start() {
 			}
 		}
 	}()
-}
-
-// ============================================================
-// Test helpers
-// ============================================================
-func (s *Server) ForceLeaderForTest() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state = leaderState
-	s.initSlotStates()
-	for i := range s.cluster {
-		s.cluster[i].nextIndex = s.tailLogIndex
-		s.cluster[i].matchIndex = 0
-	}
-}
-
-func (s *Server) TriggerAppendEntriesOnceForTest() {
-	s.appendEntries()
-}
-
-func (s *Server) ForceFollowerNoElectionForTest() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.state = followerState
-	s.electionTimeout = time.Now().Add(24 * time.Hour)
 }

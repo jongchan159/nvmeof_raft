@@ -95,15 +95,6 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 	return nil
 }
 
-// partitionStartBytes returns the byte offset where the partition begins
-// on the whole device. Reads from /sys/class/block/<part>/start.
-func partitionStartBytes(metadataDir string) uint64 {
-	// Find which partition device the metadata dir is on
-	// e.g., /dev/nvme0n1p4 → start sector from /sys/class/block/nvme0n1p4/start
-	// For now, pass as a server config parameter
-	return 0 // placeholder
-}
-
 // readEntryDirect reads one entry from the device using O_DIRECT,
 // bypassing page cache entirely. Used after doPBACopy on follower.
 func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
