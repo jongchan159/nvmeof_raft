@@ -64,10 +64,10 @@ func main() {
 	address := flag.String("address", "", "Node address (e.g., localhost:7001)")
 	peers := flag.String("peers", "", "Peer addresses (comma-separated, e.g., node1:7001,node2:7002,node3:7003)")
 	metadataDir := flag.String("metadata-dir", "./metadata", "Metadata directory for Raft logs")
-	debug := flag.Bool("debug", false, "Enable debug logging")
 	devicePath := flag.String("device", "/dev/nvme0n1", "NVMe-oF block device path")
 	partOffset := flag.Uint64("partition-offset", 0,
 		"Partition start offset in bytes (sector_start * 512)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
 

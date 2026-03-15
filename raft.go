@@ -571,16 +571,17 @@ func NewServer(
 	}
 
 	srv := &Server{
-		id:           cluster[clusterIndex].Id,
-		address:      cluster[clusterIndex].Address,
-		cluster:      cluster,
-		statemachine: statemachine,
-		metadataDir:  metadataDir,
-		clusterIndex: clusterIndex,
-		devicePath:   devicePath,
-		heartbeatMs:  300,
-		mu:           sync.Mutex{},
-		logSlotMap:   make(map[uint64]slotRange),
+		id:                   cluster[clusterIndex].Id,
+		address:              cluster[clusterIndex].Address,
+		cluster:              cluster,
+		statemachine:         statemachine,
+		metadataDir:          metadataDir,
+		clusterIndex:         clusterIndex,
+		devicePath:           devicePath,
+		partitionOffsetBytes: partitionOffsetBytes,
+		heartbeatMs:          300,
+		mu:                   sync.Mutex{},
+		logSlotMap:           make(map[uint64]slotRange),
 	}
 	srv.ringNotFull = sync.NewCond(&srv.mu)
 	return srv
