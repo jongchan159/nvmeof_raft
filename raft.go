@@ -147,7 +147,10 @@ type Server struct {
 	state        ServerState
 	cluster      []ClusterMember
 	clusterIndex int
-	devicePath   string // NVMe-oF block device path
+
+	// NVMe-oF Setting
+	devicePath           string // NVMe-oF block device path
+	partitionOffsetBytes uint64 // byte offset of partition start on whole device
 
 	// ---- Single-pointer ring buffer ----
 	// Only tailSlot advances forward. Overwrite protection is handled
@@ -557,6 +560,7 @@ func NewServer(
 	metadataDir string,
 	clusterIndex int,
 	devicePath string, // nvme device
+	partitionOffsetBytes uint64, // partition offset
 ) *Server {
 	var cluster []ClusterMember
 	for _, c := range clusterConfig {
