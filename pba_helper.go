@@ -11,7 +11,7 @@ import (
 
 // NVMEOF_DEVICE_PATH is the NVMe-oF block device shared by all computing nodes.
 // All nodes (eternity4/5/6) access the same physical storage through this path.
-const NVMEOF_DEVICE_PATH = "/dev/nvme0n1"
+//const NVMEOF_DEVICE_PATH = "/dev/nvme0n1"
 
 // leaderPBAForRange resolves the physical block address for a contiguous range
 // of ring buffer slots starting at `startSlot` for `totalSlots` slots.
@@ -84,7 +84,7 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 	}
 
 	// Perform storage-level copy via NVMe-oF device
-	if err := blockcopy.R_write_pba(NVMEOF_DEVICE_PATH, leaderPbaSrc, pbaDst, nbytes); err != nil {
+	if err := blockcopy.R_write_pba(s.devicePath, leaderPbaSrc, pbaDst, nbytes); err != nil {
 		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
 			leaderPbaSrc, pbaDst, nbytes, err)
 	}

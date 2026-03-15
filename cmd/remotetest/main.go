@@ -65,6 +65,7 @@ func main() {
 	peers := flag.String("peers", "", "Peer addresses (comma-separated, e.g., node1:7001,node2:7002,node3:7003)")
 	metadataDir := flag.String("metadata-dir", "./metadata", "Metadata directory for Raft logs")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	devicePath := flag.String("device", "/dev/nvme0n1", "NVMe-oF block device path")
 
 	flag.Parse()
 
@@ -134,6 +135,7 @@ func main() {
 		stateMachine,
 		*metadataDir,
 		clusterIndex,
+		*devicePath,
 	)
 
 	// Enable debug if requested

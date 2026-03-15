@@ -26,11 +26,11 @@ go build -o raft_server main.go
 ```bash
 cd ~/nvmeof_raft
 
-./raft_server \
+sudo ./raft_server \
   --id=5 \
   --address=eternity5:7005 \
-  --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
-  --metadata-dir=/mnt/nvme0n1/jongc/nvmeof_raft/metadata5 \
+  --peers=eternity5:7005,eternity6:7006 \
+  --metadata-dir=/mnt/nvmeof_raft/metadata5 \
   --debug
 ```
 
@@ -38,24 +38,24 @@ cd ~/nvmeof_raft
 ```bash
 cd ~/nvmeof_raft
 
-./raft_server \
+sudo ./raft_server \
   --id=6 \
   --address=eternity6:7006 \
-  --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
-  --metadata-dir=/mnt/nvme0n1/jongc/nvmeof_raft/metadata6 \
-  --debug
+  --peers=eternity5:7005,eternity6:7006 \
+  --metadata-dir=/mnt/nvmeof_raft/metadata6 \
+  --device=/dev/nvme0n1 --debug
 ```
 
 ### Node 3 (eternity4) - Optional
 ```bash
 cd ~/nvmeof_raft
 
-./raft_server \
+sudo ./raft_server \
   --id=4 \
   --address=eternity4:7004 \
   --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
-  --metadata-dir=/mnt/nvme0n1/jongc/nvmeof_raft/metadata4 \
-  --debug
+  --metadata-dir=/mnt/nvmeof_raft/metadata4 \
+  --device=/dev/nvme1n1 --debug
 ```
 
 ## 명령어 플래그

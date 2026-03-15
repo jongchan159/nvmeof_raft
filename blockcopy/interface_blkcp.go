@@ -168,7 +168,7 @@ func L_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 //
 // Parameters:
 //
-//	devicePath - path to the NVMe-oF block device (e.g. /dev/nvme-remote)
+//	devicePath - path to the NVMe-oF block device
 //	pbaSrc     - source physical byte address
 //	pbaDst     - destination physical byte address
 //	nbytes     - number of bytes to copy (rounded up to ALIGN=4096 internally)

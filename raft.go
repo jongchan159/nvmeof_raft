@@ -147,6 +147,7 @@ type Server struct {
 	state        ServerState
 	cluster      []ClusterMember
 	clusterIndex int
+	devicePath   string // NVMe-oF block device path
 
 	// ---- Single-pointer ring buffer ----
 	// Only tailSlot advances forward. Overwrite protection is handled
@@ -553,6 +554,7 @@ func NewServer(
 	statemachine StateMachine,
 	metadataDir string,
 	clusterIndex int,
+	devicePath string, // nvme device
 ) *Server {
 	var cluster []ClusterMember
 	for _, c := range clusterConfig {
@@ -569,6 +571,7 @@ func NewServer(
 		statemachine: statemachine,
 		metadataDir:  metadataDir,
 		clusterIndex: clusterIndex,
+		devicePath:   devicePath,
 		heartbeatMs:  300,
 		mu:           sync.Mutex{},
 		logSlotMap:   make(map[uint64]slotRange),
