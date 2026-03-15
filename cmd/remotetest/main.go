@@ -173,6 +173,80 @@ func main() {
 	fmt.Println("Press Ctrl+C to stop the server")
 	fmt.Println("==================================================")
 
+	// ============================================================
+	// Log Replication Test
+	// ============================================================
+	// Only the leader sends Apply(); follower just receives via PBA copy.
+	// Wait for leader election to settle, then send test commands.
+	go func() {
+		// Wait for this node to become leader
+		time.Sleep(5 * time.Second)
+
+		// Try Apply — only succeeds on the leader node
+		testCommands := [][]byte{
+			[]byte("SET name alice"),
+			[]byte("SET age 30"),
+			[]byte("SET city seoul"),
+		}
+
+		fmt.Println()
+		fmt.Println("==================================================")
+		fmt.Println("  Log Replication Test")
+		fmt.Println("==================================================")
+
+		results, err := server.Apply(testCommands)
+		if err != nil {
+			fmt.Printf("  [SKIP] This node is not the leader: %v\n", err)
+			fmt.Println("  (Only the leader can Apply commands)")
+			fmt.Println("==================================================")
+			return
+		}
+
+		fmt.Println("  Apply() succeeded on leader!")
+		for i, r := range results {
+			fmt.Printf("  [%d] cmd=%q result=%q err=%v\n",
+				i, string(testCommands[i]), string(r.Result), r.Error)
+		}
+		fmt.Println("==================================================")
+
+		// Verify: read back from state machine
+		time.Sleep(1 * time.Second)
+		verifyCommands := [][]byte{
+			[]byte("GET name"),
+			[]byte("GET age"),
+			[]byte("GET city"),
+		}
+
+		fmt.Println()
+		fmt.Println("==================================================")
+		fmt.Println("  State Machine Verification (Leader)")
+		fmt.Println("==================================================")
+
+		verifyResults, err := server.Apply(verifyCommands)
+		if err != nil {
+			fmt.Printf("  Verify failed: %v\n", err)
+		} else {
+			allPass := true
+			expected := []string{"alice", "30", "seoul"}
+			for i, r := range verifyResults {
+				pass := string(r.Result) == expected[i]
+				mark := "✓"
+				if !pass {
+					mark = "✗"
+					allPass = false
+				}
+				fmt.Printf("  %s GET %s = %q (expected %q)\n",
+					mark, string(verifyCommands[i][4:]), string(r.Result), expected[i])
+			}
+			if allPass {
+				fmt.Println("  ✓ ALL VERIFICATIONS PASSED")
+			} else {
+				fmt.Println("  ✗ SOME VERIFICATIONS FAILED")
+			}
+		}
+		fmt.Println("==================================================")
+	}()
+
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
