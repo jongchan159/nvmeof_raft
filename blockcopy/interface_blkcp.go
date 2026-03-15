@@ -206,6 +206,8 @@ func GetBlockSize() uint64 {
 }
 
 // DirectRead reads nbytes from physical address pba using O_DIRECT.
+// DirectRead reads nbytes from physical address pba using O_DIRECT.
+// Buffer is 4KB-aligned via posix_memalign for O_DIRECT compatibility.
 func DirectRead(devicePath string, pba uint64, nbytes uint64) []byte {
 	aligned := AlignUp(nbytes)
 
@@ -215,13 +217,17 @@ func DirectRead(devicePath string, pba uint64, nbytes uint64) []byte {
 	}
 	defer syscall.Close(fd)
 
-	// posix_memalign equivalent via C
-	buf := C.malloc(C.size_t(aligned))
+	// posix_memalign: allocate 4KB-aligned buffer
+	var buf unsafe.Pointer
+	ret := C.posix_memalign(&buf, C.size_t(ALIGN), C.size_t(aligned))
+	if ret != 0 {
+		panic(fmt.Sprintf("DirectRead: posix_memalign failed: %d", ret))
+	}
 	defer C.free(buf)
 
 	r := C.pread(C.int(fd), buf, C.size_t(aligned), C.off_t(pba))
 	if r != C.ssize_t(aligned) {
-		panic(fmt.Sprintf("DirectRead: pread at 0x%X returned %d", pba, r))
+		panic(fmt.Sprintf("DirectRead: pread at 0x%X returned %d (errno may apply)", pba, r))
 	}
 
 	result := C.GoBytes(buf, C.int(aligned))
