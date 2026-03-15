@@ -743,13 +743,18 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			return nil
 		}
 
-		// Invalidate page cache so readback sees the PBA-copied data
-		totalSlots := req.NumEntries * req.SlotsPerEntry
-		cacheOffset := slotOffset(s.tailSlot)
-		cacheLen := int64(totalSlots) * BLOCK_UNIT
-		s.invalidateCache(cacheOffset, cacheLen)
+		// Reopen fd to bypass stale page cache after device-level PBA copy
+		s.fd.Close()
+		var err error
+		s.fd, err = os.OpenFile(
+			path.Join(s.metadataDir, s.Metadata()),
+			os.O_SYNC|os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			panic(err)
+		}
 
 		// Update ring pointers
+		totalSlots := req.NumEntries * req.SlotsPerEntry
 		oldTailSlot := s.tailSlot
 		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
 		s.tailLogIndex += req.NumEntries

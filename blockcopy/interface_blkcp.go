@@ -204,3 +204,25 @@ func AlignUp(nbytes uint64) uint64 {
 func GetBlockSize() uint64 {
 	return uint64(C.ALIGN)
 }
+
+// DirectRead reads nbytes from physical address pba on the device using O_DIRECT.
+// Returns the read buffer. nbytes is aligned up to 4KB.
+func DirectRead(devicePath string, pba uint64, nbytes uint64) []byte {
+	aligned := AlignUp(nbytes)
+	fd, err := syscall.Open(devicePath, syscall.O_RDONLY|syscall.O_DIRECT, 0)
+	if err != nil {
+		panic(fmt.Sprintf("DirectRead: open %s: %v", devicePath, err))
+	}
+	defer syscall.Close(fd)
+
+	buf := make([]byte, aligned+4096)
+	// Align buffer to 4KB boundary
+	offset := 4096 - (uintptr(unsafe.Pointer(&buf[0])) % 4096)
+	aligned_buf := buf[offset : offset+uintptr(aligned)]
+
+	_, err = syscall.Pread(fd, aligned_buf, int64(pba))
+	if err != nil {
+		panic(fmt.Sprintf("DirectRead: pread at 0x%X: %v", pba, err))
+	}
+	return aligned_buf
+}
