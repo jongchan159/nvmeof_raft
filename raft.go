@@ -764,6 +764,7 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		for i := uint64(0); i < req.NumEntries; i++ {
 			logIdx := s.tailLogIndex - req.NumEntries + i // 이미 tailLogIndex 갱신 후
 			e, nextSlot := s.readEntryFromSlot(readSlot)
+			s.debugf("[READBACK] slot=%d term=%d cmdLen=%d", readSlot, e.Term, len(e.Command))
 			s.log = append(s.log, e)
 			needed := slotsForEntry(len(e.Command))
 			s.logSlotMap[logIdx] = slotRange{start: readSlot, numSlots: needed}
