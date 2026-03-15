@@ -869,9 +869,15 @@ func (s *Server) appendEntries() {
 
 			next := s.cluster[fi].nextIndex
 			last := s.tailLogIndex - 1
+			oldest := s.oldestLogIndex()
 
 			if next > last+1 {
 				next = last + 1
+				s.cluster[fi].nextIndex = next
+			}
+			// Clamp: if next fell below what we have in memory, reset to oldest
+			if next < oldest {
+				next = oldest
 				s.cluster[fi].nextIndex = next
 			}
 
