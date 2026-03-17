@@ -1,27 +1,42 @@
 ## Configurance
+1. System Configurance
+Ubuntu 18.04.5 LTS
 
-## Command
+
+2. Run Raft Cluster
+- setting
+	eternitystorage: storage node
+	eternity4,5,6: computing nodes (raft server)
+
+## BLOCKCOPY
 ### Test Code
-1. TestGetPBA
+1. TestGetPBA & TestBlkCp
+```console
 cd ~/nvmeof_raft/blockcopy
+#TestGetPBA
 go test -v -run TestGetPBA_Complete
-
-2. TestBlkCp
+#TestBlkCp
 sudo -E go test -v -run TestBlkCp_Complete
+```
 
-3. Test step-by-step
+2. Test step-by-step
+```console
+#TestGetPBA
 go test -v -run TestGetPBA_Step1
 go test -v -run TestGetPBA_Step2
 go test -v -run TestGetPBA_Step3
-
+#TestBlkCp
 sudo -E go test -v -run TestBlkCp_Step1
 sudo -E go test -v -run TestBlkCp_Step2
 sudo -E go test -v -run TestBlkCp_Step3
 sudo -E go test -v -run TestBlkCp_Step4
+```
 
 4. cleanup
+```console
 go test -v -run TestGetPBA_Cleanup
 go test -v -run TestBlkCp_Cleanup
+```
 
 ### Running Raft
 1. Raft Server Build
@@ -34,8 +49,3 @@ go build -tags raft -o raft_server ./cmd/remotetest
 
 2-2. 
 
-
-2. Run Raft Cluster
-- setting
-	eternitystorage: storage node
-	eternity4,5,6: computing nodes (raft server)
