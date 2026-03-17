@@ -3,16 +3,16 @@
 ## Command
 ### Test Code
 1. TestGetPBA
-cd ~/nvmeof_raft/blockcopy
-go test -v -run TestGetPBA_Complete
+`cd ~/nvmeof_raft/blockcopy`
+`go test -v -run TestGetPBA_Complete`
 
 2. TestBlkCp
-sudo -E go test -v -run TestBlkCp_Complete
+`sudo -E go test -v -run TestBlkCp_Complete`
 
 3. Test step-by-step
-go test -v -run TestGetPBA_Step1
-go test -v -run TestGetPBA_Step2
-go test -v -run TestGetPBA_Step3
+`go test -v -run TestGetPBA_Step1`
+`go test -v -run TestGetPBA_Step2`
+`go test -v -run TestGetPBA_Step3`
 
 sudo -E go test -v -run TestBlkCp_Step1
 sudo -E go test -v -run TestBlkCp_Step2
@@ -34,8 +34,6 @@ go build -o raft_server ./cmd
  or directry excute
 `go build -o raft_server`
 
-`go build -tags raft -o raft_server ./cmd/remotetest`
-
 2. Run Raft Cluster
 - setting
 	eternity4: storage node
@@ -44,12 +42,21 @@ go build -o raft_server ./cmd
 - Raft Configurance
 	Leader: eternity5
 	Followers: eternity6
-```
+
+
+```bash
 ./raft_server \
   --id=5 \
   --port=7005 \
   --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
-  --data-dir=/mnt/nvme0n1/jongc/nvmeof_raft/node5
+  --data-dir=/mnt/nvmof_raft/logs/node5
+
+./raft_server \
+  --id=6 \
+  --address=eternity6:7006 \
+  --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
+  --metadata-dir=/mnt/nvme1n1/jongc/nvmeof_raft/metadata6 \
+  --debug
 ```
 
 3. Raft Test

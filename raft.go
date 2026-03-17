@@ -120,8 +120,8 @@ const (
 
 // slotRange tracks which ring slots a single log entry occupies.
 type slotRange struct {
-	start    uint64
-	numSlots uint64
+	start    uint64		// first slot index of a log entry
+	numSlots uint64		// number of slots used by a log entry
 }
 
 type Server struct {

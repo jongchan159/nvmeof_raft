@@ -31,7 +31,9 @@ sudo ./raft_server \
   --address=eternity5:7005 \
   --peers=eternity5:7005,eternity6:7006 \
   --metadata-dir=/mnt/nvmeof_raft/metadata5 \
-  --device=/dev/nvme0n1 --debug
+  --device=/dev/nvme0n1 \
+  --partition-offset=29999759360 \
+  --debug
 ```
 
 ### Node 2 (eternity6)
@@ -58,7 +60,6 @@ sudo ./raft_server \
   --peers=eternity5:7005,eternity6:7006,eternity4:7004 \
   --metadata-dir=/mnt/nvmeof_raft/metadata4 \
   --device=/dev/nvme1n1 \
-  --partition-offset=29999759360 \
   --debug
 ```
 
