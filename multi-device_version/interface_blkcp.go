@@ -76,33 +76,35 @@ exit:
 	return result;
 }
 
-// c_write_pba: copies nbytes from pba_src to pba_dst on the same block device.
+// c_write_pba: copies nbytes from pba_src on src_fd to pba_dst on dst_fd.
 // Uses O_DIRECT aligned I/O to bypass the page cache.
+// src_fd and dst_fd may refer to different block devices (follower pull).
 //
 // Parameters:
-//   fd      - open device file descriptor (O_RDWR | O_DIRECT)
+//   src_fd  - source device file descriptor (O_RDONLY | O_DIRECT)
+//   dst_fd  - destination device file descriptor (O_RDWR | O_DIRECT)
 //   pba_src - source physical byte address
 //   pba_dst - destination physical byte address
 //   nbytes  - number of bytes to copy (must be ALIGN-aligned)
 //
 // Returns 0 on success, -1 on failure.
-static int c_write_pba(int fd, uint64_t pba_src, uint64_t pba_dst, size_t nbytes) {
+static int c_write_pba(int src_fd, int dst_fd, uint64_t pba_src, uint64_t pba_dst, size_t nbytes) {
 	void *buf;
 	if (posix_memalign(&buf, ALIGN, nbytes) != 0) {
 		perror("posix_memalign");
 		return -1;
 	}
 
-	// read from source PBA
-	ssize_t r = pread(fd, buf, nbytes, (off_t)pba_src);
+	// read from source device PBA
+	ssize_t r = pread(src_fd, buf, nbytes, (off_t)pba_src);
 	if (r != (ssize_t)nbytes) {
 		perror("pread");
 		free(buf);
 		return -1;
 	}
 
-	// write to destination PBA
-	ssize_t w = pwrite(fd, buf, nbytes, (off_t)pba_dst);
+	// write to destination device PBA
+	ssize_t w = pwrite(dst_fd, buf, nbytes, (off_t)pba_dst);
 	if (w != (ssize_t)nbytes) {
 		perror("pwrite");
 		free(buf);
@@ -163,32 +165,44 @@ func L_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 	}, nil
 }
 
-// R_write_pba copies nbytes from pbaSrc to pbaDst on the block device at devicePath.
+// R_write_pba copies nbytes from pbaSrc on srcDevicePath to pbaDst on dstDevicePath.
+// srcDevicePath and dstDevicePath may refer to different block devices,
+// enabling follower-pull replication across separate NVMe devices.
 // Wraps c_write_pba using O_DIRECT aligned I/O.
 //
 // Parameters:
 //
-//	devicePath - path to the NVMe-oF block device
-//	pbaSrc     - source physical byte address
-//	pbaDst     - destination physical byte address
-//	nbytes     - number of bytes to copy (rounded up to ALIGN=4096 internally)
+//	srcDevicePath - path to the source NVMe-oF block device (leader's device)
+//	dstDevicePath - path to the destination NVMe-oF block device (follower's device)
+//	pbaSrc        - source physical byte address
+//	pbaDst        - destination physical byte address
+//	nbytes        - number of bytes to copy (rounded up to ALIGN=4096 internally)
 //
 // Returns nil on success.
-func R_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
-	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
+func R_write_pba(srcDevicePath string, dstDevicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
+	// Open source device read-only
+	srcFd, err := syscall.Open(srcDevicePath, syscall.O_RDONLY|syscall.O_DIRECT, 0)
 	if err != nil {
-		return fmt.Errorf("R_write_pba: open %s: %v", devicePath, err)
+		return fmt.Errorf("R_write_pba: open src %s: %v", srcDevicePath, err)
 	}
-	defer syscall.Close(fd)
+	defer syscall.Close(srcFd)
+
+	// Open destination device read-write
+	dstFd, err := syscall.Open(dstDevicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
+	if err != nil {
+		return fmt.Errorf("R_write_pba: open dst %s: %v", dstDevicePath, err)
+	}
+	defer syscall.Close(dstFd)
 
 	ret := C.c_write_pba(
-		C.int(fd),
+		C.int(srcFd),
+		C.int(dstFd),
 		C.uint64_t(pbaSrc),
 		C.uint64_t(pbaDst),
 		C.size_t(nbytes),
 	)
 	if ret != 0 {
-		return fmt.Errorf("R_write_pba: c_write_pba failed (src=%d, dst=%d, nbytes=%d)", pbaSrc, pbaDst, nbytes)
+		return fmt.Errorf("R_write_pba: c_write_pba failed (src=0x%X dst=0x%X nbytes=%d)", pbaSrc, pbaDst, nbytes)
 	}
 	return nil
 }

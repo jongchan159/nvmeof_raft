@@ -62,15 +62,19 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 }
 
 // doPBACopy performs the storage-level block copy on behalf of the follower.
+// Uses follower-pull: follower reads from the leader's device and writes to its own.
+// This allows leader and follower to reside on separate physical NVMe devices.
 //
 // Flow:
 //  1. Resolve follower's destination PBA (tailSlot position)
-//  2. Call R_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
-//  3. Storage node copies the block locally — no log data crosses the network
+//  2. Call R_write_pba(leaderDevicePath, myDevicePath, pbaSrc, pbaDst, nbytes)
+//     - pread from leader's device at pbaSrc
+//     - pwrite to follower's device at pbaDst
+//  3. No log data crosses the network
 //
 // Must be called with s.mu held.
 // Returns nil on success; caller sets rsp.Success=false on error.
-func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
+func (s *Server) doPBACopy(leaderDevicePath string, leaderPbaSrc, logBlockLength uint64) error {
 	if leaderPbaSrc == 0 || logBlockLength == 0 {
 		return nil // heartbeat: no new entries
 	}
@@ -84,14 +88,14 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
 		return fmt.Errorf("doPBACopy: %v", err)
 	}
 
-	// Perform storage-level copy via NVMe-oF device
-	if err := blockcopy.R_write_pba(s.devicePath, leaderPbaSrc, pbaDst, nbytes); err != nil {
+	// Follower pulls: read from leader's device, write to own device
+	if err := blockcopy.R_write_pba(leaderDevicePath, s.devicePath, leaderPbaSrc, pbaDst, nbytes); err != nil {
 		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
 			leaderPbaSrc, pbaDst, nbytes, err)
 	}
 
-	s.debugf("[PBA COPY] src=0x%X dst=0x%X nbytes=%d blocks=%d",
-		leaderPbaSrc, pbaDst, nbytes, logBlockLength)
+	s.debugf("[PBA COPY] leaderDev=%s myDev=%s src=0x%X dst=0x%X nbytes=%d blocks=%d",
+		leaderDevicePath, s.devicePath, leaderPbaSrc, pbaDst, nbytes, logBlockLength)
 	return nil
 }
 

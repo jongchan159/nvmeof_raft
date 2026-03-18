@@ -725,7 +725,7 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 	// Storage-level block copy
 	if req.NumEntries > 0 && req.LeaderPbaSrc != 0 {
-		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength); err != nil {
+		if err := s.doPBACopy(req.LeaderDevicePath, req.LeaderPbaSrc, req.LogBlockLength); err != nil {
 			s.warnf("doPBACopy failed: %v", err)
 			return nil
 		}
@@ -1001,6 +1001,7 @@ func (s *Server) appendEntries() {
 				LogBlockLength: logBlockLength,
 				NumEntries:     lenEntries,
 				SlotsPerEntry:  slotsPerEntry,
+				LeaderDevicePath: s.devicePath, // follower pulls from this device
 			}
 			s.mu.Unlock()
 
