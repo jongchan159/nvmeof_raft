@@ -5,8 +5,10 @@ Ubuntu 18.04.5 LTS
 
 2. Run Raft Cluster
 - setting
-	eternitystorage: storage node
-	eternity4,5,6: computing nodes (raft server)
+
+eternitystorage: storage node
+
+eternity4,5,6: computing nodes (raft server)
 
 ## BLOCKCOPY
 ### Test Code
