@@ -13,8 +13,10 @@ Ubuntu 18.04.5 LTS
 1. TestGetPBA & TestBlkCp
 ```console
 cd ~/nvmeof_raft/blockcopy
+
 #TestGetPBA
 go test -v -run TestGetPBA_Complete
+
 #TestBlkCp
 sudo -E go test -v -run TestBlkCp_Complete
 ```
@@ -25,6 +27,7 @@ sudo -E go test -v -run TestBlkCp_Complete
 go test -v -run TestGetPBA_Step1
 go test -v -run TestGetPBA_Step2
 go test -v -run TestGetPBA_Step3
+
 #TestBlkCp
 sudo -E go test -v -run TestBlkCp_Step1
 sudo -E go test -v -run TestBlkCp_Step2
