@@ -1,7 +1,7 @@
 package blockcopy
 
 /*
-#cgo CFLAGS: -D_GNU_SOURCE
+#cgo CFLAGS: -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 #cgo LDFLAGS: -lm
 
 #include <errno.h>

@@ -52,5 +52,6 @@ cd ~/nvmeof_raft
 2-1. remote test
 go build -tags raft -o raft_server ./cmd/remotetest
 
-2-2. 
-
+2-2. metadata parsing
+./mdparse /mnt/nvmeof_raft/metadata4/md_4.dat
+./mdparse /mnt/nvmeof_raft/

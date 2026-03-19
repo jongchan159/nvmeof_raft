@@ -24,13 +24,9 @@ go build -o raft_server main.go
 
 ### Node 1 (eternity4)
 ```bash
-cd ~/nvmeof_raft
-
-sudo ./raft_server \
-  --id=4 \
-  --address=eternity4:7004 \
+sudo ./raft_server --id=4 --address=eternity4:7004 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
-  --metadata-dir=/mnt/nvme0n1/metadata4 \
+  --metadata-dir=/mnt/nvmeof_raft/metadata4 \
   --device=/dev/nvme1n1 \
   --partition-offset=1048576 \
   --debug
@@ -38,29 +34,21 @@ sudo ./raft_server \
 
 ### Node 2 (eternity5)
 ```bash
-cd ~/nvmeof_raft
-
-sudo ./raft_server \
-  --id=5 \
-  --address=eternity5:7005 \
+sudo ./raft_server --id=5 --address=eternity5:7005 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
-  --metadata-dir=/mnt/nvme0n1/metadata5 \
+  --metadata-dir=/mnt/nvmeof_raft/metadata5 \
   --device=/dev/nvme2n1 \
   --partition-offset=10738466816 \
   --debug
 ```
 
-### Node 2 (eternity6)
+### Node 3 (eternity6)
 ```bash
-cd ~/nvmeof_raft
-
-sudo ./raft_server \
-  --id=6 \
-  --address=eternity6:7006 \
+sudo ./raft_server --id=6 --address=eternity6:7006 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
-  --metadata-dir=/mnt/nvme0n1/metadata6 \
+  --metadata-dir=/mnt/nvmeof_raft/metadata6 \
   --device=/dev/nvme0n1 \
-  --partition-offset=21476524032 \
+  --partition-offset=21475885056 \
   --debug
 ```
 
@@ -73,25 +61,6 @@ sudo ./raft_server \
 | `--peers` | 클러스터의 모든 노드 (쉼표로 구분) | `--peers=node1:7001,node2:7002` | ✅ |
 | `--metadata-dir` | 메타데이터 저장 디렉토리 | `--metadata-dir=./data` | ❌ (기본: ./metadata) |
 | `--debug` | 디버그 로그 활성화 | `--debug` | ❌ |
-
-## 로컬 테스트 (단일 머신)
-
-```bash
-# Terminal 1: Node 1
-./raft_server --id=1 --address=localhost:7001 \
-  --peers=localhost:7001,localhost:7002,localhost:7003 \
-  --metadata-dir=./data1 --debug
-
-# Terminal 2: Node 2
-./raft_server --id=2 --address=localhost:7002 \
-  --peers=localhost:7001,localhost:7002,localhost:7003 \
-  --metadata-dir=./data2 --debug
-
-# Terminal 3: Node 3
-./raft_server --id=3 --address=localhost:7003 \
-  --peers=localhost:7001,localhost:7002,localhost:7003 \
-  --metadata-dir=./data3 --debug
-```
 
 ## State Machine
 

@@ -49,3 +49,4 @@ go.work
 raft_server
 raft_study.go
 test_later
+.gitignore
