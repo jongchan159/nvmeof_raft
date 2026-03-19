@@ -176,10 +176,8 @@ func main() {
 	// ============================================================
 	// Log Replication Test
 	// ============================================================
-	// Only the leader sends Apply(); follower just receives via PBA copy.
-	// Wait for leader election to settle, then send test commands.
 	go func() {
-		// Wait for this node to become leader
+		// Wait for leader election to settle
 		time.Sleep(5 * time.Second)
 
 		// Try Apply — only succeeds on the leader node
@@ -196,12 +194,49 @@ func main() {
 
 		results, err := server.Apply(testCommands)
 		if err != nil {
-			fmt.Printf("  [SKIP] This node is not the leader: %v\n", err)
-			fmt.Println("  (Only the leader can Apply commands)")
+			// ---- FOLLOWER PATH ----
+			fmt.Printf("  [FOLLOWER] This node is not the leader: %v\n", err)
+			fmt.Println("  Waiting 10s for log replication via PBA copy...")
+			fmt.Println("==================================================")
+
+			// Wait for leader to replicate and this node to apply
+			time.Sleep(10 * time.Second)
+
+			fmt.Println()
+			fmt.Println("==================================================")
+			fmt.Println("  State Machine Verification (Follower)")
+			fmt.Println("==================================================")
+
+			// Read state machine directly — no extra log entries
+			expected := map[string]string{
+				"name": "alice",
+				"age":  "30",
+				"city": "seoul",
+			}
+			allPass := true
+			for key, want := range expected {
+				got, ok := stateMachine.data[key]
+				mark := "✓"
+				if !ok {
+					mark = "✗"
+					got = "NOT_FOUND"
+					allPass = false
+				} else if got != want {
+					mark = "✗"
+					allPass = false
+				}
+				fmt.Printf("  %s sm.data[%q] = %q (expected %q)\n", mark, key, got, want)
+			}
+			if allPass {
+				fmt.Println("  ✓ FOLLOWER: ALL VERIFICATIONS PASSED")
+			} else {
+				fmt.Println("  ✗ FOLLOWER: SOME VERIFICATIONS FAILED")
+			}
 			fmt.Println("==================================================")
 			return
 		}
 
+		// ---- LEADER PATH ----
 		fmt.Println("  Apply() succeeded on leader!")
 		for i, r := range results {
 			fmt.Printf("  [%d] cmd=%q result=%q err=%v\n",
@@ -209,40 +244,37 @@ func main() {
 		}
 		fmt.Println("==================================================")
 
-		// Verify: read back from state machine
+		// Verify leader state machine directly (no extra log entries)
 		time.Sleep(1 * time.Second)
-		verifyCommands := [][]byte{
-			[]byte("GET name"),
-			[]byte("GET age"),
-			[]byte("GET city"),
-		}
 
 		fmt.Println()
 		fmt.Println("==================================================")
 		fmt.Println("  State Machine Verification (Leader)")
 		fmt.Println("==================================================")
 
-		verifyResults, err := server.Apply(verifyCommands)
-		if err != nil {
-			fmt.Printf("  Verify failed: %v\n", err)
+		expected := map[string]string{
+			"name": "alice",
+			"age":  "30",
+			"city": "seoul",
+		}
+		allPass := true
+		for key, want := range expected {
+			got, ok := stateMachine.data[key]
+			mark := "✓"
+			if !ok {
+				mark = "✗"
+				got = "NOT_FOUND"
+				allPass = false
+			} else if got != want {
+				mark = "✗"
+				allPass = false
+			}
+			fmt.Printf("  %s sm.data[%q] = %q (expected %q)\n", mark, key, got, want)
+		}
+		if allPass {
+			fmt.Println("  ✓ LEADER: ALL VERIFICATIONS PASSED")
 		} else {
-			allPass := true
-			expected := []string{"alice", "30", "seoul"}
-			for i, r := range verifyResults {
-				pass := string(r.Result) == expected[i]
-				mark := "✓"
-				if !pass {
-					mark = "✗"
-					allPass = false
-				}
-				fmt.Printf("  %s GET %s = %q (expected %q)\n",
-					mark, string(verifyCommands[i][4:]), string(r.Result), expected[i])
-			}
-			if allPass {
-				fmt.Println("  ✓ ALL VERIFICATIONS PASSED")
-			} else {
-				fmt.Println("  ✗ SOME VERIFICATIONS FAILED")
-			}
+			fmt.Println("  ✗ LEADER: SOME VERIFICATIONS FAILED")
 		}
 		fmt.Println("==================================================")
 	}()

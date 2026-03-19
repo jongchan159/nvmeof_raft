@@ -396,6 +396,19 @@ func (s *Server) restoreCircular() {
 		}
 	}
 
+    // Pre-allocate full 16KB so all ring slots have physical blocks (FIEMAP)
+    const RING_FILE_SIZE = TOTAL_SLOTS * BLOCK_UNIT // 32 * 512 = 16384
+    stat, err := s.fd.Stat()
+    if err != nil {
+        panic(err)
+    }
+    if stat.Size() < RING_FILE_SIZE {
+        zeros := make([]byte, RING_FILE_SIZE-stat.Size())
+        s.fd.Seek(stat.Size(), 0)
+        s.fd.Write(zeros)
+        s.fd.Sync()
+    }
+	
 	s.fd.Seek(0, 0)
 	var header [HEADER_SIZE]byte
 	n, err := io.ReadFull(s.fd, header[:])
