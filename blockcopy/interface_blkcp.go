@@ -102,12 +102,13 @@ static int c_write_pba(int fd, uint64_t pba_src, uint64_t pba_dst, size_t nbytes
 	}
 
 	// write to destination PBA
-	ssize_t w = pwrite(fd, buf, nbytes, (off_t)pba_dst);
-	if (w != (ssize_t)nbytes) {
-		perror("pwrite");
-		free(buf);
-		return -1;
-	}
+    ssize_t w = pwrite(fd, buf, nbytes, (off_t)pba_dst);
+    if (w != (ssize_t)nbytes) {
+        fprintf(stderr, "pwrite failed: dst=0x%lx nbytes=%zu returned=%zd errno=%d\n",
+                (unsigned long)pba_dst, nbytes, w, errno);
+        free(buf);
+        return -errno;  // return errno
+    }
 
 	free(buf);
 	return 0;
