@@ -44,14 +44,16 @@ go test -v -run TestBlkCp_Cleanup
 ```
 
 ### Running Raft
-1. Raft Server Build
+#### Raft Server Build
 1) Move to main directory
 cd ~/nvmeof_raft
 
 2) Build (It must has `cmd/main.go`)
+
 2-1. remote test
-go build -tags raft -o raft_server ./cmd/remotetest
+
+`go build -tags raft -o raft_server ./cmd/remotetest`
 
 2-2. metadata parsing
-./mdparse /mnt/nvmeof_raft/metadata4/md_4.dat
-./mdparse /mnt/nvmeof_raft/
+
+`go build -o mdparse ./cmd/mdparse`
