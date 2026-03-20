@@ -110,6 +110,7 @@ static int c_write_pba(int fd, uint64_t pba_src, uint64_t pba_dst, size_t nbytes
         return -errno;  // return errno
     }
 
+	ioctl(fd, BLKFLSBUF, 0);
 	free(buf);
 	return 0;
 }
@@ -176,7 +177,7 @@ func L_get_pba(filePath string, logical int64, length uint64) (PBASegment, error
 //
 // Returns nil on success.
 func R_write_pba(devicePath string, pbaSrc uint64, pbaDst uint64, nbytes uint64) error {
-	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT, 0)
+	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT|syscall.O_SYNC, 0)
 	if err != nil {
 		return fmt.Errorf("R_write_pba: open %s: %v", devicePath, err)
 	}

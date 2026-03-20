@@ -16,6 +16,7 @@ import (
 	"path"
 	"sync"
 	"time"
+	"nvmeof_raft/blockcopy"
 )
 
 func Assert(msg string, a, b interface{}) {
@@ -408,7 +409,7 @@ func (s *Server) restoreCircular() {
         s.fd.Write(zeros)
         s.fd.Sync()
     }
-	
+
 	s.fd.Seek(0, 0)
 	var header [HEADER_SIZE]byte
 	n, err := io.ReadFull(s.fd, header[:])
@@ -449,6 +450,21 @@ func (s *Server) restoreCircular() {
 
 	s.debugf("Restored: term=%d tailLogIndex=%d tailSlot=%d commit=%d applied=%d",
 		s.currentTerm, s.tailLogIndex, s.tailSlot, s.commitIndex, s.lastApplied)
+
+	if s.Debug {
+		metaPath := path.Join(s.metadataDir, s.Metadata())
+		for slot := uint64(0); slot < 8; slot++ {
+			off := int64(RING_OFFSET) + int64(slot)*BLOCK_UNIT
+			seg, err := blockcopy.L_get_pba(metaPath, off, BLOCK_UNIT)
+			if err != nil {
+				fmt.Printf("[INIT PBA] slot=%d offset=%d ERROR: %v\n", slot, off, err)
+			} else {
+				devPBA := seg.PBA + s.partitionOffsetBytes
+				fmt.Printf("[INIT PBA] slot=%d offset=%d FIEMAP=0x%X devPBA=0x%X\n",
+					slot, off, seg.PBA, devPBA)
+			}
+		}
+	}
 }
 
 // ============================================================

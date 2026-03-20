@@ -71,28 +71,29 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 // Must be called with s.mu held.
 // Returns nil on success; caller sets rsp.Success=false on error.
 func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
-	if leaderPbaSrc == 0 || logBlockLength == 0 {
-		return nil // heartbeat: no new entries
-	}
+    if leaderPbaSrc == 0 || logBlockLength == 0 {
+        return nil
+    }
 
-	// Convert 512B block count -> bytes, align to 4KB for O_DIRECT
-	nbytes := blockcopy.AlignUp(logBlockLength * uint64(BLOCK_UNIT))
+    nbytes := blockcopy.AlignUp(logBlockLength * uint64(BLOCK_UNIT))
 
-	// Resolve follower's destination PBA
-	pbaDst, err := s.followerPBAForNext(nbytes)
-	if err != nil {
-		return fmt.Errorf("doPBACopy: %v", err)
-	}
+    // Read from leader's PBA via device (O_DIRECT read works over NVMe-oF)
+    buf := blockcopy.DirectRead(s.devicePath, leaderPbaSrc, nbytes)
 
-	// Perform storage-level copy via NVMe-oF device
-	if err := blockcopy.R_write_pba(s.devicePath, leaderPbaSrc, pbaDst, nbytes); err != nil {
-		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X dst=0x%X nbytes=%d): %v",
-			leaderPbaSrc, pbaDst, nbytes, err)
-	}
+    // Write to follower's ring file via filesystem (s.fd)
+    fileOff := int64(RING_OFFSET) + int64(s.tailSlot)*BLOCK_UNIT
+    n, err := s.fd.WriteAt(buf[:nbytes], fileOff)
+    if err != nil {
+        return fmt.Errorf("doPBACopy: WriteAt(offset=%d, nbytes=%d): %v", fileOff, nbytes, err)
+    }
+    if n != int(nbytes) {
+        return fmt.Errorf("doPBACopy: short write %d/%d", n, nbytes)
+    }
+    s.fd.Sync()
 
-	s.debugf("[PBA COPY] src=0x%X dst=0x%X nbytes=%d blocks=%d",
-		leaderPbaSrc, pbaDst, nbytes, logBlockLength)
-	return nil
+    s.debugf("[PBA COPY] src=0x%X -> fileOff=%d nbytes=%d blocks=%d",
+        leaderPbaSrc, fileOff, nbytes, logBlockLength)
+    return nil
 }
 
 // readEntryDirect reads one entry from the device using O_DIRECT,
