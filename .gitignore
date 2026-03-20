@@ -53,3 +53,5 @@ raft_study.go
 pbastress
 mdparse
 raft_server
+bench_goraft
+bench_nvmeof

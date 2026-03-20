@@ -179,9 +179,9 @@ const HEADER_SIZE = BLOCK_UNIT
 const RING_OFFSET = HEADER_SIZE
 
 const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
-const NUM_PAGES = 4                            // 16KB total
-const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE // 32
-const RING_SLOTS = TOTAL_SLOTS - 1             // 31 usable
+const NUM_PAGES = 64                           // modify this constant to extent disk space
+const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE  
+const RING_SLOTS = TOTAL_SLOTS - 1             
 
 // ============================================================
 // Helpers

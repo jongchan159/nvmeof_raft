@@ -62,3 +62,41 @@ go build -o mdparse ./cmd/mdparse
 
 go build -tags raft -o pbastress ./cmd/benchmarks/pbastress/main.go
 sudo ./pbastress
+
+2-4. bench test
+go build -o bench_nvmeof -tags raft  ./cmd/benchmarks/bench_nvmeof/main.go
+go build -o bench_goraft  ./cmd/benchmarks/bench_goraft/main.go
+\
+
+# eternity4
+sudo ./bench_goraft --id=0 \
+--peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+--metadata-dir=/mnt/nvmeof_raft/bench_goraft --bench
+
+# eternity5
+sudo ./bench_goraft --id=1 \
+--peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+--metadata-dir=/mnt/nvmeof_raft/bench_goraft --bench
+
+# eternity6
+sudo ./bench_goraft --id=2 \
+--peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+--metadata-dir=/mnt/nvmeof_raft/bench_goraft --bench
+
+
+bench_nvmeof (distributed)
+
+# eternity4 (node 0) — drives benchmark
+sudo ./bench_nvmeof --id=0 --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+    --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+    --device=/dev/nvme1n1 --partition-offset=1048576 --bench
+
+# eternity5 (node 1)
+sudo ./bench_nvmeof --id=1 --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+    --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+    --device=/dev/nvme2n1 --partition-offset=10738466816
+
+# eternity6 (node 2)
+sudo ./bench_nvmeof --id=2 --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+    --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+    --device=/dev/nvme0n1 --partition-offset=21475885056
