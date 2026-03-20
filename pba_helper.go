@@ -70,7 +70,7 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 //
 // Must be called with s.mu held.
 // Returns nil on success; caller sets rsp.Success=false on error.
-func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
+func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
     if leaderPbaSrc == 0 || logBlockLength == 0 {
         return nil
     }
@@ -80,8 +80,8 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength uint64) error {
     // Read from leader's PBA via device (O_DIRECT read works over NVMe-oF)
     buf := blockcopy.DirectRead(s.devicePath, leaderPbaSrc, nbytes)
 
-    // Write to follower's ring file via filesystem (s.fd)
-    fileOff := int64(RING_OFFSET) + int64(s.tailSlot)*BLOCK_UNIT
+    // Write to follower's ring file at the OLD tail slot (before pointer advance)
+    fileOff := int64(RING_OFFSET) + int64(dstSlot)*BLOCK_UNIT
     n, err := s.fd.WriteAt(buf[:nbytes], fileOff)
     if err != nil {
         return fmt.Errorf("doPBACopy: WriteAt(offset=%d, nbytes=%d): %v", fileOff, nbytes, err)

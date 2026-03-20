@@ -19,6 +19,21 @@ import (
 	"nvmeof_raft/blockcopy"
 )
 
+
+// ============================================================
+// Constants
+// ============================================================
+const BLOCK_UNIT = 512
+const PAGE_SIZE = 4096
+const HEADER_SIZE = BLOCK_UNIT
+const RING_OFFSET = HEADER_SIZE
+
+const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
+const NUM_PAGES = 1024                         // modify this constant to extent disk space
+const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE  
+const RING_SLOTS = TOTAL_SLOTS - 1         
+// ============================================================
+
 func Assert(msg string, a, b interface{}) {
 	if a != b {
 		panic(fmt.Sprintf("%s. Got a = %#v, b = %#v", msg, a, b))
@@ -168,20 +183,7 @@ type Server struct {
 
 	// Condition variable: Apply() blocks here when ring is full.
 	ringNotFull *sync.Cond
-}
-
-// ============================================================
-// Constants
-// ============================================================
-const BLOCK_UNIT = 512
-const PAGE_SIZE = 4096
-const HEADER_SIZE = BLOCK_UNIT
-const RING_OFFSET = HEADER_SIZE
-
-const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
-const NUM_PAGES = 64                           // modify this constant to extent disk space
-const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE  
-const RING_SLOTS = TOTAL_SLOTS - 1             
+}    
 
 // ============================================================
 // Helpers
@@ -391,7 +393,7 @@ func (s *Server) restoreCircular() {
 		var err error
 		s.fd, err = os.OpenFile(
 			path.Join(s.metadataDir, s.Metadata()),
-			os.O_SYNC|os.O_CREATE|os.O_RDWR, 0644)
+			os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
 			panic(err)
 		}
@@ -754,37 +756,49 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 	// Storage-level block copy
 	if req.NumEntries > 0 && req.LeaderPbaSrc != 0 {
-		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength); err != nil {
+		// Save current tail before advancing — doPBACopy writes here
+		totalSlots := req.NumEntries * req.SlotsPerEntry
+		oldTailSlot := s.tailSlot
+
+		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength, oldTailSlot); err != nil {
 			s.warnf("doPBACopy failed: %v", err)
 			return nil
 		}
 
-		// // Reopen fd to bypass stale page cache after device-level PBA copy
-		// s.fd.Close()
-		// var err error
-		// s.fd, err = os.OpenFile(
-		// 	path.Join(s.metadataDir, s.Metadata()),
-		// 	os.O_SYNC|os.O_CREATE|os.O_RDWR, 0644)
-		// if err != nil {
-		// 	panic(err)
-		// }
-
-		// Update ring pointers
-		totalSlots := req.NumEntries * req.SlotsPerEntry
-		oldTailSlot := s.tailSlot
+		// Advance ring pointers after copy
 		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
 		s.tailLogIndex += req.NumEntries
 
-		// Read back entries DIRECTLY from device (bypass page cache)
-		readSlot := oldTailSlot
+		// Read back all entries in ONE fd.ReadAt (avoids N FIEMAP + N O_DIRECT calls)
+		totalReadBytes := int(totalSlots) * BLOCK_UNIT
+		buf := make([]byte, totalReadBytes)
+		readFileOff := int64(RING_OFFSET) + int64(oldTailSlot)*BLOCK_UNIT
+		if _, err := s.fd.ReadAt(buf, readFileOff); err != nil {
+			s.warnf("readback ReadAt failed: %v", err)
+			return nil
+		}
+		currentSlot := oldTailSlot
+		bufOff := 0
 		for i := uint64(0); i < req.NumEntries; i++ {
 			logIdx := s.tailLogIndex - req.NumEntries + i
-			e, nextSlot := s.readEntryDirect(readSlot)
-			s.debugf("[READBACK] slot=%d term=%d cmdLen=%d", readSlot, e.Term, len(e.Command))
+			header := buf[bufOff : bufOff+BLOCK_UNIT]
+			term := binary.LittleEndian.Uint64(header[0:])
+			cmdLen := binary.LittleEndian.Uint64(header[8:])
+			numSlots := binary.LittleEndian.Uint64(header[16:])
+
+			cmd := make([]byte, cmdLen)
+			copied := 0
+			for j := uint64(1); j < numSlots; j++ {
+				src := buf[bufOff+int(j)*BLOCK_UNIT : bufOff+int(j)*BLOCK_UNIT+BLOCK_UNIT]
+				copied += copy(cmd[copied:], src)
+			}
+
+			e := Entry{Term: term, Command: cmd}
+			s.debugf("[READBACK] slot=%d term=%d cmdLen=%d", currentSlot, e.Term, len(e.Command))
 			s.log = append(s.log, e)
-			needed := slotsForEntry(len(e.Command))
-			s.logSlotMap[logIdx] = slotRange{start: readSlot, numSlots: needed}
-			readSlot = nextSlot
+			s.logSlotMap[logIdx] = slotRange{start: currentSlot, numSlots: numSlots}
+			currentSlot = (currentSlot + numSlots) % RING_SLOTS
+			bufOff += int(numSlots) * BLOCK_UNIT
 		}
 
 		s.debugf("[PBA SYNC] tailLogIndex=%d tailSlot=%d logLen=%d",

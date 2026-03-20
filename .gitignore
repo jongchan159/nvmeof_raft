@@ -50,8 +50,9 @@ raft_study.go
 .gitignore
 
 # excutable
-pbastress
-mdparse
+main
+pbastress_sv
+mdparser
 raft_server
-bench_goraft
-bench_nvmeof
+bench_goraft_sv
+bench_nvmeof_sv
