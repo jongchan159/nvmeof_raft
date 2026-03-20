@@ -51,4 +51,5 @@ raft_study.go
 
 # excutable
 pbastress
+mdparse
 raft_server
