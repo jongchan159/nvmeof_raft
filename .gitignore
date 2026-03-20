@@ -46,7 +46,9 @@ go.work
 
 # End of https://www.toptal.com/developers/gitignore/api/go,visualstudiocode
 
-raft_server
 raft_study.go
-test_later
 .gitignore
+
+# excutable
+pbastress
+raft_server

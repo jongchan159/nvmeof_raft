@@ -52,8 +52,13 @@ cd ~/nvmeof_raft
 
 2-1. remote test
 
-`go build -tags raft -o raft_server ./cmd/remotetest`
+go build -tags raft -o raft_server ./cmd/remotetest
 
 2-2. metadata parsing
 
-`go build -o mdparse ./cmd/mdparse`
+go build -o mdparse ./cmd/mdparse
+
+2-3 stress tesst
+
+go build -tags raft -o pbastress ./cmd/benchmarks/pbastress/main.go
+sudo ./pbastress

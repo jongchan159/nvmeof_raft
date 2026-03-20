@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"strings"
@@ -110,7 +111,7 @@ func main() {
 	rand.Seed(0)
 
 	// Delete any existing .dat files
-	entries, err := os.ReadDir("./")
+	entries, err := ioutil.ReadDir("./")
 	if err != nil {
 		panic(err)
 	}

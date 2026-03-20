@@ -8,6 +8,9 @@ To run:
 ```console
 $ cd cmd/stress
 $ go run main.go util.go
+
+fuser -k 2020/tcp 2021/tcp 2022/tcp 2>/dev/null; sleep 1
+go run main.go util.go 
 ```
 
 With the `go-deadlock` package turned off and the default `sync`
