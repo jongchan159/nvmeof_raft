@@ -29,7 +29,7 @@ const HEADER_SIZE = BLOCK_UNIT
 const RING_OFFSET = HEADER_SIZE
 
 const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
-const NUM_PAGES = 1024                         // modify this constant to extent disk space
+const NUM_PAGES = 2048                         // modify this constant to extent disk space
 const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE  
 const RING_SLOTS = TOTAL_SLOTS - 1         
 // ============================================================
@@ -83,6 +83,7 @@ type AppendEntriesRequest struct {
 	LogBlockLength uint64 // number of 512B blocks to copy
 	NumEntries     uint64 // how many log entries this batch contains
 	SlotsPerEntry  uint64 // average slots per entry (for follower pointer advance)
+	StartSlot      uint64 // ring slot where the first entry starts (handles wrap alignment)
 }
 
 type AppendEntriesResponse struct {
@@ -277,6 +278,23 @@ func (s *Server) canOverwrite(slot, count uint64) bool {
 	return true
 }
 
+// canWriteAll checks if all commands can be written to the ring, respecting
+// wrap-alignment (entries that don't fit before ring end skip to slot 0).
+func (s *Server) canWriteAll(commands [][]byte) bool {
+	slot := s.tailSlot
+	for _, cmd := range commands {
+		needed := slotsForEntry(len(cmd))
+		if slot+needed > RING_SLOTS {
+			slot = 0
+		}
+		if !s.canOverwrite(slot, needed) {
+			return false
+		}
+		slot += needed
+	}
+	return true
+}
+
 // markSlots sets state for a contiguous range of slots.
 func (s *Server) markSlots(slot, count uint64, state LogEntryState) {
 	for i := uint64(0); i < count; i++ {
@@ -296,33 +314,21 @@ func (s *Server) initSlotStates() {
 // Ring buffer I/O
 // ============================================================
 
-// writeEntryToRing writes one entry at tailSlot and advances tailSlot.
-// Returns the start slot where the entry was written.
-func (s *Server) writeEntryToRing(e Entry) (start uint64, numSlots uint64) {
+// encodeEntry encodes one entry into dst (must have len >= numSlots*BLOCK_UNIT).
+// Returns the number of slots used.
+func encodeEntry(e Entry, dst []byte) uint64 {
 	needed := slotsForEntry(len(e.Command))
-
-	// Write header slot
-	var header [BLOCK_UNIT]byte
-	binary.LittleEndian.PutUint64(header[0:], e.Term)
-	binary.LittleEndian.PutUint64(header[8:], uint64(len(e.Command)))
-	binary.LittleEndian.PutUint64(header[16:], needed)
-	s.fd.Seek(slotOffset(s.tailSlot), 0)
-	s.fd.Write(header[:])
-
-	// Write payload slots
+	// Header slot
+	binary.LittleEndian.PutUint64(dst[0:], e.Term)
+	binary.LittleEndian.PutUint64(dst[8:], uint64(len(e.Command)))
+	binary.LittleEndian.PutUint64(dst[16:], needed)
+	// Payload slots
 	written := 0
 	for i := uint64(1); i < needed; i++ {
-		slot := (s.tailSlot + i) % RING_SLOTS
-		var payload [BLOCK_UNIT]byte
-		n := copy(payload[:], e.Command[written:])
-		written += n
-		s.fd.Seek(slotOffset(slot), 0)
-		s.fd.Write(payload[:])
+		off := int(i) * BLOCK_UNIT
+		written += copy(dst[off:off+BLOCK_UNIT], e.Command[written:])
 	}
-
-	startSlot := s.tailSlot
-	s.tailSlot = (s.tailSlot + needed) % RING_SLOTS
-	return startSlot, needed
+	return needed
 }
 
 // ============================================================
@@ -343,23 +349,56 @@ func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 		nNewEntries = len(s.log) - 1
 	}
 
-	// Write new entries to ring buffer
+	// Write new entries to ring buffer using batched WriteAt calls.
+	// Entries after alignment are contiguous, so we accumulate a single large
+	// buffer and write it in one shot (1 WriteAt instead of N*slotsPerEntry Seek+Write).
+	// If an alignment boundary is crossed mid-batch, we split into two WriteAt calls.
 	if writeLog && nNewEntries > 0 {
 		start := len(s.log) - nNewEntries
 		if start < 1 {
 			start = 1
 		}
-		for i := start; i < len(s.log); i++ {
-			// Compute the logIndex for this entry
-			logIdx := s.tailLogIndex - uint64(len(s.log)-i)
-			startSlot, needed := s.writeEntryToRing(s.log[i])
 
-			// Leader: track slot mapping and mark as Appended
+		var runBuf []byte    // accumulated encoded bytes for current contiguous run
+		var runOff int64     // file offset where the current run starts
+
+		flushRun := func() {
+			if len(runBuf) > 0 {
+				s.fd.WriteAt(runBuf, runOff)
+				runBuf = runBuf[:0]
+			}
+		}
+
+		for i := start; i < len(s.log); i++ {
+			logIdx := s.tailLogIndex - uint64(len(s.log)-i)
+			e := s.log[i]
+			needed := slotsForEntry(len(e.Command))
+
+			// Alignment: if entry would cross ring boundary, flush and reset to slot 0
+			if s.tailSlot+needed > RING_SLOTS {
+				flushRun()
+				s.tailSlot = 0
+			}
+
+			if len(runBuf) == 0 {
+				runOff = slotOffset(s.tailSlot)
+			}
+
+			// Encode entry directly into run buffer
+			entryBytes := int(needed) * BLOCK_UNIT
+			off := len(runBuf)
+			runBuf = append(runBuf, make([]byte, entryBytes)...)
+			encodeEntry(e, runBuf[off:])
+
+			startSlot := s.tailSlot
+			s.tailSlot += needed
+
 			if s.state == leaderState {
 				s.logSlotMap[logIdx] = slotRange{start: startSlot, numSlots: needed}
 				s.markSlots(startSlot, needed, LeaderAppended)
 			}
 		}
+		flushRun()
 	}
 
 	// Write file header
@@ -756,31 +795,42 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 	// Storage-level block copy
 	if req.NumEntries > 0 && req.LeaderPbaSrc != 0 {
-		// Save current tail before advancing — doPBACopy writes here
-		totalSlots := req.NumEntries * req.SlotsPerEntry
+		// Sync follower tailSlot to leader's StartSlot.
+		// The leader may have skipped slots at the ring boundary (wrap-alignment),
+		// so the follower must mirror that skip rather than compute it independently.
+		if s.tailSlot != req.StartSlot {
+			s.debugf("[WRAP ALIGN] follower tailSlot %d -> leader StartSlot %d",
+				s.tailSlot, req.StartSlot)
+			s.tailSlot = req.StartSlot
+		}
 		oldTailSlot := s.tailSlot
+
+		// LogBlockLength is the exact slot count (aligned), not the approximated average.
+		// Use it for ReadAt so the size matches what doPBACopy wrote exactly.
+		exactSlots := req.LogBlockLength
 
 		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength, oldTailSlot); err != nil {
 			s.warnf("doPBACopy failed: %v", err)
 			return nil
 		}
 
-		// Advance ring pointers after copy
-		s.tailSlot = (s.tailSlot + totalSlots) % RING_SLOTS
-		s.tailLogIndex += req.NumEntries
-
-		// Read back all entries in ONE fd.ReadAt (avoids N FIEMAP + N O_DIRECT calls)
-		totalReadBytes := int(totalSlots) * BLOCK_UNIT
+		// Read back all entries in ONE fd.ReadAt BEFORE advancing pointers.
+		// If ReadAt fails we must NOT have mutated tailLogIndex or s.log,
+		// otherwise the follower's state becomes inconsistent and causes panics on retry.
+		totalReadBytes := int(exactSlots) * BLOCK_UNIT
 		buf := make([]byte, totalReadBytes)
 		readFileOff := int64(RING_OFFSET) + int64(oldTailSlot)*BLOCK_UNIT
 		if _, err := s.fd.ReadAt(buf, readFileOff); err != nil {
 			s.warnf("readback ReadAt failed: %v", err)
 			return nil
 		}
+
+		// Parse entries from buffer and append to in-memory log
 		currentSlot := oldTailSlot
 		bufOff := 0
+		baseLogIdx := s.tailLogIndex
 		for i := uint64(0); i < req.NumEntries; i++ {
-			logIdx := s.tailLogIndex - req.NumEntries + i
+			logIdx := baseLogIdx + i
 			header := buf[bufOff : bufOff+BLOCK_UNIT]
 			term := binary.LittleEndian.Uint64(header[0:])
 			cmdLen := binary.LittleEndian.Uint64(header[8:])
@@ -797,9 +847,13 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			s.debugf("[READBACK] slot=%d term=%d cmdLen=%d", currentSlot, e.Term, len(e.Command))
 			s.log = append(s.log, e)
 			s.logSlotMap[logIdx] = slotRange{start: currentSlot, numSlots: numSlots}
-			currentSlot = (currentSlot + numSlots) % RING_SLOTS
+			currentSlot += numSlots
 			bufOff += int(numSlots) * BLOCK_UNIT
 		}
+
+		// Advance ring pointers only after successful readback
+		s.tailSlot = oldTailSlot + exactSlots
+		s.tailLogIndex += req.NumEntries
 
 		s.debugf("[PBA SYNC] tailLogIndex=%d tailSlot=%d logLen=%d",
 			s.tailLogIndex, s.tailSlot, len(s.log)-1)
@@ -828,15 +882,11 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 		return nil, ErrApplyToLeader
 	}
 
-	// Compute total slots needed
-	var totalNeeded uint64
-	for _, cmd := range commands {
-		totalNeeded += slotsForEntry(len(cmd))
-	}
-
-	// Backpressure: block until ring has enough writable slots
-	for !s.canOverwrite(s.tailSlot, totalNeeded) {
-		s.debugf("Ring full (need %d slots). Blocking Apply()...", totalNeeded)
+	// Backpressure: block until ring has enough writable slots for all commands.
+	// Must account for wrap-alignment: an entry that won't fit before ring end
+	// skips to slot 0, so we check each entry's actual (aligned) position.
+	for !s.canWriteAll(commands) {
+		s.debugf("Ring full. Blocking Apply()...")
 		s.ringNotFull.Wait()
 		if s.state != leaderState {
 			s.mu.Unlock()
@@ -1044,6 +1094,7 @@ func (s *Server) appendEntries() {
 				LogBlockLength: logBlockLength,
 				NumEntries:     lenEntries,
 				SlotsPerEntry:  slotsPerEntry,
+				StartSlot:      startSlot,
 			}
 			s.mu.Unlock()
 

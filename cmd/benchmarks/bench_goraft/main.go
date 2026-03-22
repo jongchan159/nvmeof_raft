@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	N_ENTRIES    = 500
-	BATCH_SIZE   = 16 // commands per Apply() call
-	PAYLOAD_SIZE = 4096
+	N_ENTRIES    = 10000
+	BATCH_SIZE   = 256 // commands per Apply() call
+	PAYLOAD_SIZE = 8192
 )
 
 type nullSM struct{}

@@ -78,7 +78,10 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
     nbytes := blockcopy.AlignUp(logBlockLength * uint64(BLOCK_UNIT))
 
     // Read from leader's PBA via device (O_DIRECT read works over NVMe-oF)
-    buf := blockcopy.DirectRead(s.devicePath, leaderPbaSrc, nbytes)
+    buf, err := blockcopy.DirectRead(s.devicePath, leaderPbaSrc, nbytes)
+    if err != nil {
+        return fmt.Errorf("doPBACopy: DirectRead(pba=0x%X, nbytes=%d): %v", leaderPbaSrc, nbytes, err)
+    }
 
     // Write to follower's ring file at the OLD tail slot (before pointer advance)
     fileOff := int64(RING_OFFSET) + int64(dstSlot)*BLOCK_UNIT
@@ -98,13 +101,13 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
 
 // readEntryDirect reads one entry from the device using O_DIRECT,
 // bypassing page cache entirely. Used after doPBACopy on follower.
-func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
+func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64, error) {
 	metaPath := filepath.Join(s.metadataDir, s.Metadata())
 
 	logicalOff := int64(RING_OFFSET) + int64(headerSlot)*BLOCK_UNIT
 	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, uint64(BLOCK_UNIT))
 	if err != nil {
-		panic(fmt.Sprintf("readEntryDirect: L_get_pba slot %d: %v", headerSlot, err))
+		return Entry{}, 0, fmt.Errorf("readEntryDirect: L_get_pba slot %d: %v", headerSlot, err)
 	}
 	rawPBA := seg.PBA + s.partitionOffsetBytes
 
@@ -112,7 +115,10 @@ func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
 	alignedPBA := rawPBA &^ (PAGE_SIZE - 1)    // round down to 4KB
 	offsetInPage := int64(rawPBA - alignedPBA) // where our data starts within the 4KB block
 
-	buf := blockcopy.DirectRead(s.devicePath, alignedPBA, PAGE_SIZE)
+	buf, err := blockcopy.DirectRead(s.devicePath, alignedPBA, PAGE_SIZE)
+	if err != nil {
+		return Entry{}, 0, fmt.Errorf("readEntryDirect: DirectRead header slot %d pba=0x%X: %v", headerSlot, alignedPBA, err)
+	}
 
 	// Parse header at the correct offset within the 4KB block
 	header := buf[offsetInPage : offsetInPage+BLOCK_UNIT]
@@ -128,16 +134,19 @@ func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64) {
 			pOff := int64(RING_OFFSET) + int64(pSlot)*BLOCK_UNIT
 			pSeg, err := blockcopy.L_get_pba(metaPath, pOff, uint64(BLOCK_UNIT))
 			if err != nil {
-				panic(fmt.Sprintf("readEntryDirect: payload slot %d: %v", pSlot, err))
+				return Entry{}, 0, fmt.Errorf("readEntryDirect: L_get_pba payload slot %d: %v", pSlot, err)
 			}
 			pRawPBA := pSeg.PBA + s.partitionOffsetBytes
 			pAlignedPBA := pRawPBA &^ (PAGE_SIZE - 1)
 			pOffInPage := int64(pRawPBA - pAlignedPBA)
 
-			pBuf := blockcopy.DirectRead(s.devicePath, pAlignedPBA, PAGE_SIZE)
+			pBuf, err := blockcopy.DirectRead(s.devicePath, pAlignedPBA, PAGE_SIZE)
+			if err != nil {
+				return Entry{}, 0, fmt.Errorf("readEntryDirect: DirectRead payload slot %d pba=0x%X: %v", pSlot, pAlignedPBA, err)
+			}
 			copied += copy(cmd[copied:], pBuf[pOffInPage:pOffInPage+BLOCK_UNIT])
 		}
 	}
 
-	return Entry{Term: term, Command: cmd}, (headerSlot + numSlots) % RING_SLOTS
+	return Entry{Term: term, Command: cmd}, (headerSlot + numSlots) % RING_SLOTS, nil
 }
