@@ -28,8 +28,8 @@ func (n *nullSM) Apply(cmd []byte) ([]byte, error) { return nil, nil }
 
 var letters = []byte("abcdefghijklmnopqrstuvwxyz")
 
-func randomPayload() []byte {
-	b := make([]byte, PAYLOAD_SIZE)
+func randomPayload(size int) []byte {
+	b := make([]byte, size)
 	for i := range b {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
@@ -47,7 +47,7 @@ func parsePeers(peersStr string) []nvmeof_raft.ClusterMember {
 	return members
 }
 
-func printStats(latencies []time.Duration, total time.Duration, n int) {
+func printStats(latencies []time.Duration, total time.Duration, n, batch, payload int) {
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	var sum time.Duration
 	for _, l := range latencies {
@@ -56,8 +56,10 @@ func printStats(latencies []time.Duration, total time.Duration, n int) {
 	avg := sum / time.Duration(len(latencies))
 	throughput := float64(n) / total.Seconds()
 
-	fmt.Printf("\n=== nvmeof_raft (PBA-based replication) ===\n")
-	fmt.Printf("  Entries      : %d\n", n)
+	fmt.Printf("\n")
+	fmt.Printf("======= Experimental Parametesr ======\n")
+	fmt.Printf("%d entires, Batch: %d, Payload: %d\n", n, batch, payload)
+	fmt.Printf("=== goraft (PBA-based replication) ===\n")
 	fmt.Printf("  Total time   : %s\n", total)
 	fmt.Printf("  Throughput   : %.2f entries/s\n", throughput)
 	fmt.Printf("  Latency avg  : %s\n", avg)
@@ -75,6 +77,9 @@ func main() {
 	partitionOffset := flag.Uint64("partition-offset", 0, "partition start offset in bytes (sector_start * 512)")
 	bench          := flag.Bool("bench", false, "run benchmark on this node if it becomes leader")
 	debug          := flag.Bool("debug", false, "enable raft debug logging")
+	nEntries       := flag.Int("entries", N_ENTRIES, "number of entries to submit")
+	batchSize      := flag.Int("batch", BATCH_SIZE, "commands per Apply() call")
+	payloadSize    := flag.Int("payload", PAYLOAD_SIZE, "payload size in bytes")
 	flag.Parse()
 
 	if *peersStr == "" {
@@ -113,19 +118,19 @@ func main() {
 		fmt.Printf("[node %d] lost leadership, waiting again...\n", cluster[*id].Id)
 	}
 	fmt.Printf("[node %d] is stable leader — starting benchmark (%d entries, batch=%d, payload=%d)\n",
-		server.Id(), N_ENTRIES, BATCH_SIZE, PAYLOAD_SIZE)
+		server.Id(), *nEntries, *batchSize, *payloadSize)
 
 	var latencies []time.Duration
 	start := time.Now()
 
-	for i := 0; i < N_ENTRIES; i += BATCH_SIZE {
-		end := i + BATCH_SIZE
-		if end > N_ENTRIES {
-			end = N_ENTRIES
+	for i := 0; i < *nEntries; i += *batchSize {
+		end := i + *batchSize
+		if end > *nEntries {
+			end = *nEntries
 		}
 		var batch [][]byte
 		for k := i; k < end; k++ {
-			batch = append(batch, randomPayload())
+			batch = append(batch, randomPayload(*payloadSize))
 		}
 		t := time.Now()
 		if _, err := server.Apply(batch); err != nil {
@@ -135,5 +140,5 @@ func main() {
 		latencies = append(latencies, time.Since(t))
 	}
 
-	printStats(latencies, time.Since(start), N_ENTRIES)
+	printStats(latencies, time.Since(start), *nEntries, *batchSize, *payloadSize)
 }

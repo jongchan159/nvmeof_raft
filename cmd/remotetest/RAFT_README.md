@@ -22,35 +22,26 @@ go build -o raft_server main.go
 
 ## 3노드 클러스터 실행
 
-### Node 1 (eternity4)
-```bash
+# eternity4:
 sudo ./raft_server --id=1 --address=eternity4:7004 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
   --metadata-dir=/mnt/nvmeof_raft/metadata4 \
   --device=/dev/nvme1n1 \
-  --partition-offset=1048576 \
-  --debug
-```
+  --partition-offset=1048576 --debug
 
-### Node 2 (eternity5)
-```bash
+# eternity5:
 sudo ./raft_server --id=2 --address=eternity5:7005 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
   --metadata-dir=/mnt/nvmeof_raft/metadata5 \
   --device=/dev/nvme2n1 \
-  --partition-offset=10738466816 \
-  --debug
-```
+  --partition-offset=53688139776 --debug
 
-### Node 3 (eternity6)
-```bash
+# eternity6:
 sudo ./raft_server --id=3 --address=eternity6:7006 \
   --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
   --metadata-dir=/mnt/nvmeof_raft/metadata6 \
   --device=/dev/nvme0n1 \
-  --partition-offset=21475885056 \
-  --debug
-```
+  --partition-offset=107375230976 --debug
 
 ## 명령어 플래그
 

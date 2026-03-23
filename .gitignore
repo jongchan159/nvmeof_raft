@@ -51,8 +51,8 @@ raft_study.go
 
 # excutable
 main
-pbastress_sv
+pbastress
 mdparser
 raft_server
-bench_goraft_sv
-bench_nvmeof_sv
+bench_goraft
+bench_nvmeof
