@@ -30,8 +30,8 @@ const RING_OFFSET = HEADER_SIZE
 
 const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
 const NUM_PAGES = 2048                         // modify this constant to extent disk space
-const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE  
-const RING_SLOTS = TOTAL_SLOTS - 1         
+const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE
+const RING_SLOTS = TOTAL_SLOTS - 1
 // ============================================================
 
 func Assert(msg string, a, b interface{}) {
@@ -184,7 +184,7 @@ type Server struct {
 
 	// Condition variable: Apply() blocks here when ring is full.
 	ringNotFull *sync.Cond
-}    
+}
 
 // ============================================================
 // Helpers
@@ -342,6 +342,10 @@ func encodeEntry(e Entry, dst []byte) uint64 {
 //   [32:39] commitIndex
 //   [40:47] lastApplied
 
+// persistCircular writes Raft metadata and new log entries directly to the
+// NVMe-oF storage device, bypassing the filesystem layer entirely.
+// Log entries are written via DirectWrite at the FIEMAP-resolved device PBA.
+// The header (term, votedFor, indices) is also written directly to device.
 func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 	t := time.Now()
 
@@ -349,10 +353,12 @@ func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 		nNewEntries = len(s.log) - 1
 	}
 
-	// Write new entries to ring buffer using batched WriteAt calls.
-	// Entries after alignment are contiguous, so we accumulate a single large
-	// buffer and write it in one shot (1 WriteAt instead of N*slotsPerEntry Seek+Write).
-	// If an alignment boundary is crossed mid-batch, we split into two WriteAt calls.
+	metaPath := path.Join(s.metadataDir, s.Metadata())
+	s.debugf("persistCircular: metaPath = %s", metaPath)
+
+	// Write new entries directly to storage (bypassing filesystem).
+	// FIEMAP resolves the file offset -> physical device address for each run,
+	// then DirectWrite sends data straight to the block device via O_DIRECT.
 	if writeLog && nNewEntries > 0 {
 		start := len(s.log) - nNewEntries
 		if start < 1 {
@@ -364,7 +370,16 @@ func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 
 		flushRun := func() {
 			if len(runBuf) > 0 {
-				s.fd.WriteAt(runBuf, runOff)
+				// Resolve physical device address for this run via FIEMAP
+				seg, err := blockcopy.L_get_pba(metaPath, runOff, uint64(len(runBuf)))
+				if err != nil {
+					panic(fmt.Errorf("persistCircular: L_get_pba(off=%d): %v", runOff, err))
+				}
+				pba := seg.PBA + s.partitionOffsetBytes
+				// Write directly to storage, bypassing the filesystem
+				if err := blockcopy.DirectWrite(s.devicePath, pba, runBuf); err != nil {
+					panic(fmt.Errorf("persistCircular: DirectWrite(pba=0x%X): %v", pba, err))
+				}
 				runBuf = runBuf[:0]
 			}
 		}
@@ -401,8 +416,8 @@ func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 		flushRun()
 	}
 
-	// Write file header
-	s.fd.Seek(0, 0)
+	// Write header directly to storage via FIEMAP-resolved device PBA.
+	// Header is at logical offset 0 in the metadata file.
 	var header [HEADER_SIZE]byte
 	binary.LittleEndian.PutUint64(header[0:], s.currentTerm)
 	binary.LittleEndian.PutUint64(header[8:], s.getVotedFor())
@@ -410,11 +425,15 @@ func (s *Server) persistCircular(writeLog bool, nNewEntries int) {
 	binary.LittleEndian.PutUint64(header[24:], s.tailSlot)
 	binary.LittleEndian.PutUint64(header[32:], s.commitIndex)
 	binary.LittleEndian.PutUint64(header[40:], s.lastApplied)
-	if _, err := s.fd.Write(header[:]); err != nil {
-		panic(err)
+
+	s.debugf("persistCirculr: metaPath: %s", metaPath)
+	headerSeg, err := blockcopy.L_get_pba(metaPath, 0, HEADER_SIZE)
+	if err != nil {
+		panic(fmt.Errorf("persistCircular: L_get_pba header: %v", err))
 	}
-	if err := s.fd.Sync(); err != nil {
-		panic(err)
+	headerPBA := headerSeg.PBA + s.partitionOffsetBytes
+	if err := blockcopy.DirectWrite(s.devicePath, headerPBA, header[:]); err != nil {
+		panic(fmt.Errorf("persistCircular: DirectWrite header(pba=0x%X): %v", headerPBA, err))
 	}
 
 	s.debugf("Persisted in %s. Term:%d LogLen:%d (%d new) VotedFor:%d",
@@ -438,8 +457,8 @@ func (s *Server) restoreCircular() {
 		}
 	}
 
-    // Pre-allocate full 16KB so all ring slots have physical blocks (FIEMAP)
-    const RING_FILE_SIZE = TOTAL_SLOTS * BLOCK_UNIT // 32 * 512 = 16384
+    // Pre-allocate full ring file so all slots have physical blocks (FIEMAP)
+    const RING_FILE_SIZE = TOTAL_SLOTS * BLOCK_UNIT
     stat, err := s.fd.Stat()
     if err != nil {
         panic(err)
@@ -548,8 +567,6 @@ func (s *Server) advanceCommitIndex() {
 
 	// (2) Apply committed entries to state machine
 	oldest := s.oldestLogIndex()
-	//s.debugf("[APPLY CHECK] lastApplied=%d oldest=%d tailLogIndex=%d commitIndex=%d logLen=%d",
-	//	s.lastApplied, oldest, s.tailLogIndex, s.commitIndex, len(s.log)-1)
 	for s.lastApplied >= oldest &&
 		s.lastApplied < s.tailLogIndex &&
 		s.lastApplied <= s.commitIndex {
@@ -564,27 +581,6 @@ func (s *Server) advanceCommitIndex() {
 		}
 		s.lastApplied++
 	}
-
-	// (3) Leader: trim old entries no follower needs
-	// if s.state == leaderState {
-	// 	minNeeded := s.tailLogIndex
-	// 	for j := range s.cluster {
-	// 		if j == s.clusterIndex {
-	// 			continue
-	// 		}
-	// 		if s.cluster[j].nextIndex < minNeeded {
-	// 			minNeeded = s.cluster[j].nextIndex
-	// 		}
-	// 	}
-	// 	minNeeded = minUint64(minNeeded, s.commitIndex)
-	// 	oldest = s.oldestLogIndex()
-	// 	if minNeeded > oldest {
-	// 		trimCount := minNeeded - oldest
-	// 		if trimCount > 0 && uint64(len(s.log)-1) > trimCount {
-	// 			s.log = append(s.log[:1], s.log[1+trimCount:]...)
-	// 		}
-	// 	}
-	// }
 }
 
 func (s *Server) ensureLog() {
@@ -796,8 +792,6 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 	// Storage-level block copy
 	if req.NumEntries > 0 && req.LeaderPbaSrc != 0 {
 		// Sync follower tailSlot to leader's StartSlot.
-		// The leader may have skipped slots at the ring boundary (wrap-alignment),
-		// so the follower must mirror that skip rather than compute it independently.
 		if s.tailSlot != req.StartSlot {
 			s.debugf("[WRAP ALIGN] follower tailSlot %d -> leader StartSlot %d",
 				s.tailSlot, req.StartSlot)
@@ -805,8 +799,6 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 		}
 		oldTailSlot := s.tailSlot
 
-		// LogBlockLength is the exact slot count (aligned), not the approximated average.
-		// Use it for ReadAt so the size matches what doPBACopy wrote exactly.
 		exactSlots := req.LogBlockLength
 
 		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength, oldTailSlot); err != nil {
@@ -814,14 +806,21 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 			return nil
 		}
 
-		// Read back all entries in ONE fd.ReadAt BEFORE advancing pointers.
-		// If ReadAt fails we must NOT have mutated tailLogIndex or s.log,
-		// otherwise the follower's state becomes inconsistent and causes panics on retry.
+		// Read back all entries directly from storage (bypassing filesystem).
+		// FIEMAP resolves the slot's file offset -> device PBA, then DirectRead
+		// fetches the data via O_DIRECT without touching the page cache.
 		totalReadBytes := int(exactSlots) * BLOCK_UNIT
-		buf := make([]byte, totalReadBytes)
 		readFileOff := int64(RING_OFFSET) + int64(oldTailSlot)*BLOCK_UNIT
-		if _, err := s.fd.ReadAt(buf, readFileOff); err != nil {
-			s.warnf("readback ReadAt failed: %v", err)
+		metaPath := path.Join(s.metadataDir, s.Metadata())
+		readSeg, err := blockcopy.L_get_pba(metaPath, readFileOff, uint64(totalReadBytes))
+		if err != nil {
+			s.warnf("readback L_get_pba failed: %v", err)
+			return nil
+		}
+		readPBA := readSeg.PBA + s.partitionOffsetBytes
+		buf, err := blockcopy.DirectRead(s.devicePath, readPBA, uint64(totalReadBytes))
+		if err != nil {
+			s.warnf("readback DirectRead failed: %v", err)
 			return nil
 		}
 
@@ -883,8 +882,6 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 	}
 
 	// Backpressure: block until ring has enough writable slots for all commands.
-	// Must account for wrap-alignment: an entry that won't fit before ring end
-	// skips to slot 0, so we check each entry's actual (aligned) position.
 	for !s.canWriteAll(commands) {
 		s.debugf("Ring full. Blocking Apply()...")
 		s.ringNotFull.Wait()
@@ -910,9 +907,9 @@ func (s *Server) Apply(commands [][]byte) ([]ApplyResult, error) {
 	s.persistCircular(true, len(commands))
 	s.mu.Unlock()
 
-	s.debugf("[APPLY] calling appendEntries...") // 추가
+	s.debugf("[APPLY] calling appendEntries...")
 	s.appendEntries()
-	s.debugf("[APPLY] appendEntries returned, waiting for results...") // 추가
+	s.debugf("[APPLY] appendEntries returned, waiting for results...")
 
 	results := make([]ApplyResult, len(commands))
 	var wg sync.WaitGroup
@@ -1244,4 +1241,136 @@ func (s *Server) Start() {
 			}
 		}
 	}()
+}
+
+// ============================================================
+// PBA helpers (storage-direct versions, inlined from pba_helper.go)
+// ============================================================
+
+// leaderPBAForRange resolves the physical block address for a contiguous range
+// of ring buffer slots starting at `startSlot` for `totalSlots` slots.
+// Uses FIEMAP to map the metadata file offset to a device PBA.
+//
+// Must be called with s.mu held.
+func (s *Server) leaderPBAForRange(startSlot, totalSlots uint64) (pbaSrc uint64, nbytes uint64, err error) {
+	if totalSlots == 0 {
+		return 0, 0, nil
+	}
+
+	logicalOff := int64(RING_OFFSET) + int64(startSlot)*BLOCK_UNIT
+
+	rawBytes := totalSlots * uint64(BLOCK_UNIT)
+	nbytes = blockcopy.AlignUp(rawBytes)
+
+	metaPath := path.Join(s.metadataDir, s.Metadata())
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+	if err != nil {
+		return 0, 0, fmt.Errorf("leaderPBAForRange(startSlot=%d totalSlots=%d): %v",
+			startSlot, totalSlots, err)
+	}
+
+	return seg.PBA + s.partitionOffsetBytes, nbytes, nil
+}
+
+// followerPBAForNext resolves the physical block address of the follower's
+// metadata file at the position where it will receive the next entries (tailSlot).
+//
+// Must be called with s.mu held.
+func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
+	logicalOff := int64(RING_OFFSET) + int64(s.tailSlot)*BLOCK_UNIT
+
+	metaPath := path.Join(s.metadataDir, s.Metadata())
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+	if err != nil {
+		return 0, fmt.Errorf("followerPBAForNext(tailSlot=%d): %v", s.tailSlot, err)
+	}
+
+	return seg.PBA + s.partitionOffsetBytes, nil
+}
+
+// doPBACopy performs a storage-level block copy on behalf of the follower,
+// bypassing the filesystem entirely.
+//
+// Flow:
+//  1. Resolve follower's destination PBA at dstSlot via FIEMAP
+//  2. Call R_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
+//     — storage node copies the block at the device level, no fd.WriteAt involved
+//
+// Must be called with s.mu held.
+func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
+	if leaderPbaSrc == 0 || logBlockLength == 0 {
+		return nil
+	}
+
+	nbytes := blockcopy.AlignUp(logBlockLength * uint64(BLOCK_UNIT))
+
+	// Resolve follower's destination PBA at dstSlot via FIEMAP
+	logicalOff := int64(RING_OFFSET) + int64(dstSlot)*BLOCK_UNIT
+	metaPath := path.Join(s.metadataDir, s.Metadata())
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, nbytes)
+	if err != nil {
+		return fmt.Errorf("doPBACopy: L_get_pba(slot=%d): %v", dstSlot, err)
+	}
+	followerPbaDst := seg.PBA + s.partitionOffsetBytes
+
+	// Device-to-device block copy: bypasses filesystem, no fd.WriteAt
+	if err := blockcopy.R_write_pba(s.devicePath, leaderPbaSrc, followerPbaDst, nbytes); err != nil {
+		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X, dst=0x%X, nbytes=%d): %v",
+			leaderPbaSrc, followerPbaDst, nbytes, err)
+	}
+
+	s.debugf("[PBA COPY] src=0x%X -> dst=0x%X nbytes=%d blocks=%d",
+		leaderPbaSrc, followerPbaDst, nbytes, logBlockLength)
+	return nil
+}
+
+// readEntryDirect reads one entry from the device using O_DIRECT,
+// bypassing page cache entirely. Used after doPBACopy on follower.
+func (s *Server) readEntryDirect(headerSlot uint64) (Entry, uint64, error) {
+	metaPath := path.Join(s.metadataDir, s.Metadata())
+
+	logicalOff := int64(RING_OFFSET) + int64(headerSlot)*BLOCK_UNIT
+	seg, err := blockcopy.L_get_pba(metaPath, logicalOff, uint64(BLOCK_UNIT))
+	if err != nil {
+		return Entry{}, 0, fmt.Errorf("readEntryDirect: L_get_pba slot %d: %v", headerSlot, err)
+	}
+	rawPBA := seg.PBA + s.partitionOffsetBytes
+
+	// Align PBA down to 4KB boundary for O_DIRECT
+	alignedPBA := rawPBA &^ (PAGE_SIZE - 1)
+	offsetInPage := int64(rawPBA - alignedPBA)
+
+	buf, err := blockcopy.DirectRead(s.devicePath, alignedPBA, PAGE_SIZE)
+	if err != nil {
+		return Entry{}, 0, fmt.Errorf("readEntryDirect: DirectRead header slot %d pba=0x%X: %v", headerSlot, alignedPBA, err)
+	}
+
+	header := buf[offsetInPage : offsetInPage+BLOCK_UNIT]
+	term := binary.LittleEndian.Uint64(header[0:])
+	cmdLen := binary.LittleEndian.Uint64(header[8:])
+	numSlots := binary.LittleEndian.Uint64(header[16:])
+
+	cmd := make([]byte, cmdLen)
+	if cmdLen > 0 {
+		copied := 0
+		for i := uint64(1); i < numSlots; i++ {
+			pSlot := (headerSlot + i) % RING_SLOTS
+			pOff := int64(RING_OFFSET) + int64(pSlot)*BLOCK_UNIT
+			pSeg, err := blockcopy.L_get_pba(metaPath, pOff, uint64(BLOCK_UNIT))
+			if err != nil {
+				return Entry{}, 0, fmt.Errorf("readEntryDirect: L_get_pba payload slot %d: %v", pSlot, err)
+			}
+			pRawPBA := pSeg.PBA + s.partitionOffsetBytes
+			pAlignedPBA := pRawPBA &^ (PAGE_SIZE - 1)
+			pOffInPage := int64(pRawPBA - pAlignedPBA)
+
+			pBuf, err := blockcopy.DirectRead(s.devicePath, pAlignedPBA, PAGE_SIZE)
+			if err != nil {
+				return Entry{}, 0, fmt.Errorf("readEntryDirect: DirectRead payload slot %d pba=0x%X: %v", pSlot, pAlignedPBA, err)
+			}
+			copied += copy(cmd[copied:], pBuf[pOffInPage:pOffInPage+BLOCK_UNIT])
+		}
+	}
+
+	return Entry{Term: term, Command: cmd}, (headerSlot + numSlots) % RING_SLOTS, nil
 }

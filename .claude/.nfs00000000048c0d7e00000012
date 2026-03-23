@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go run:*)",
+      "Read(//usr/local/go/**)",
+      "Read(//home/jongc/go/**)",
+      "Read(//usr/**)"
+    ]
+  }
+}

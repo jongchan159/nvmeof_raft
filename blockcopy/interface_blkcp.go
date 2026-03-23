@@ -1,3 +1,6 @@
+//go:build raft
+// +build raft
+
 package blockcopy
 
 /*
@@ -74,6 +77,58 @@ static int c_get_pba(int fd, off_t logical, size_t length,
 exit:
 	free(fiemap);
 	return result;
+}
+
+// c_direct_write: writes arbitrary data to a physical block address on a block
+// device using O_DIRECT. Handles unaligned pba or nbytes via read-modify-write
+// within 4KB-aligned pages so O_DIRECT constraints are always satisfied.
+//
+// Parameters:
+//   fd     - open device file descriptor (O_RDWR | O_DIRECT)
+//   pba    - target physical byte address (need not be ALIGN-aligned)
+//   data   - bytes to write
+//   nbytes - number of bytes to write (need not be ALIGN-aligned)
+//
+// Returns 0 on success, -1 on failure.
+static int c_direct_write(int fd, uint64_t pba, const void* data, size_t nbytes) {
+	if (nbytes == 0) return 0;
+
+	// Compute the aligned range that covers [pba, pba+nbytes)
+	uint64_t start_page = pba & ~(uint64_t)(ALIGN - 1);
+	uint64_t end        = pba + nbytes;
+	uint64_t end_page   = (end + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
+	size_t   total      = (size_t)(end_page - start_page);
+
+	void *buf;
+	if (posix_memalign(&buf, ALIGN, total) != 0) {
+		perror("c_direct_write: posix_memalign");
+		return -1;
+	}
+
+	// Read existing data for the aligned range (read-modify-write)
+	ssize_t r = pread(fd, buf, total, (off_t)start_page);
+	if (r != (ssize_t)total) {
+		fprintf(stderr, "c_direct_write: pread failed at 0x%lx total=%zu returned=%zd errno=%d\n",
+				(unsigned long)start_page, total, r, errno);
+		free(buf);
+		return -1;
+	}
+
+	// Overlay caller's data at the correct offset within the aligned buffer
+	size_t offset = (size_t)(pba - start_page);
+	memcpy((char*)buf + offset, data, nbytes);
+
+	// Write back the full aligned range
+	ssize_t w = pwrite(fd, buf, total, (off_t)start_page);
+	free(buf);
+	if (w != (ssize_t)total) {
+		fprintf(stderr, "c_direct_write: pwrite failed at 0x%lx total=%zu returned=%zd errno=%d\n",
+				(unsigned long)start_page, total, w, errno);
+		return -1;
+	}
+
+	ioctl(fd, BLKFLSBUF, 0);
+	return 0;
 }
 
 // c_write_pba: copies nbytes from pba_src to pba_dst on the same block device.
@@ -205,6 +260,31 @@ func AlignUp(nbytes uint64) uint64 {
 // GetBlockSize returns the O_DIRECT alignment size (4096 bytes).
 func GetBlockSize() uint64 {
 	return uint64(C.ALIGN)
+}
+
+// DirectWrite writes data to the specified physical byte address on devicePath
+// using O_DIRECT, bypassing the page cache. Unaligned pba or sizes are handled
+// transparently via read-modify-write within 4KB pages.
+func DirectWrite(devicePath string, pba uint64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	fd, err := syscall.Open(devicePath, syscall.O_RDWR|syscall.O_DIRECT|syscall.O_SYNC, 0)
+	if err != nil {
+		return fmt.Errorf("DirectWrite: open %s: %v", devicePath, err)
+	}
+	defer syscall.Close(fd)
+
+	ret := C.c_direct_write(
+		C.int(fd),
+		C.uint64_t(pba),
+		unsafe.Pointer(&data[0]),
+		C.size_t(len(data)),
+	)
+	if ret != 0 {
+		return fmt.Errorf("DirectWrite: c_direct_write failed (pba=0x%X, nbytes=%d)", pba, len(data))
+	}
+	return nil
 }
 
 // DirectRead reads nbytes from physical address pba using O_DIRECT.

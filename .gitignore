@@ -48,6 +48,8 @@ go.work
 
 raft_study.go
 .gitignore
+.cluade
+*_save.go
 
 # excutable
 main
@@ -56,3 +58,10 @@ mdparser
 raft_server
 bench_goraft
 bench_nvmeof
+
+#statistics
+stat*.py
+stat_image
+bin
+bench_logs
+*.sh

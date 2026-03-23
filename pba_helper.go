@@ -1,5 +1,5 @@
-//go:build raft
-// +build raft
+//go:build raft_save
+// +build raft_save
 
 package nvmeof_raft
 
