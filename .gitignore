@@ -48,7 +48,7 @@ go.work
 
 raft_study.go
 .gitignore
-.cluade
+.claude
 *_save.go
 
 # excutable
