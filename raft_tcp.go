@@ -1,5 +1,5 @@
-//go:build raft
-// +build raft
+//go:build raft_tcp
+// +build raft_tcp
 
 package nvmeof_raft
 
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/rpc"
 	"os"
@@ -120,9 +121,8 @@ func (st LogEntryState) String() string {
 }
 
 type ClusterMember struct {
-	Id           uint64
-	Address      string
-	nextDialTime time.Time
+	Id         uint64
+	Address    string
 	nextIndex  uint64
 	matchIndex uint64
 	votedFor   uint64
@@ -937,72 +937,42 @@ func rdmaDialHTTP(address string) (*rpc.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Bound the CONNECT exchange so a peer that never sends HTTP 200
-	// (e.g. deadlocked Hijack) does not block forever.
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	_, err = io.WriteString(conn, "CONNECT "+rpc.DefaultRPCPath+" HTTP/1.0\n\n")
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
-	if err != nil {
-		conn.Close()
-		return nil, err
+	if err == nil && resp.Status == "200 Connected to Go RPC" {
+		return rpc.NewClient(conn), nil
 	}
-	if resp.Status != "200 Connected to Go RPC" {
-		conn.Close()
-		return nil, errors.New("unexpected HTTP response: " + resp.Status)
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
 	}
-	// Clear the deadline before handing conn to net/rpc's gob codec.
-	conn.SetDeadline(time.Time{})
-	return rpc.NewClient(conn), nil
+	conn.Close()
+	return nil, err
 }
 
 func (s *Server) rpcCall(i int, name string, req, rsp interface{}) bool {
-	// Read cached state without holding the lock during the dial.
 	s.mu.Lock()
-	rpcClient := s.cluster[i].rpcClient
-	addr := s.cluster[i].Address
-	id := s.cluster[i].Id
-	nextDial := s.cluster[i].nextDialTime
-	s.mu.Unlock()
-
-	var err error
-	if rpcClient == nil {
-		if time.Now().Before(nextDial) {
+	if s.cluster[i].rpcClient == nil {
+		client, err := rpc.DialHTTP("tcp", s.cluster[i].Address)
+		//client, err := rdmaDialHTTP(s.cluster[i].Address)
+		
+		if err != nil {
+			s.mu.Unlock()
+			s.warnf("Dial failed to %d: %v", s.cluster[i].Id, err)
 			return false
 		}
-		var newClient *rpc.Client
-		newClient, err = rdmaDialHTTP(addr)
-		if err == nil {
-			s.mu.Lock()
-			if s.cluster[i].rpcClient == nil {
-				s.cluster[i].rpcClient = newClient
-				s.cluster[i].nextDialTime = time.Time{}
-			} else {
-				newClient.Close()
-			}
-			rpcClient = s.cluster[i].rpcClient
-			s.mu.Unlock()
-		} else {
-			s.warnf("Dial failed to %d: %v", id, err)
-			s.mu.Lock()
-			s.cluster[i].nextDialTime = time.Now().Add(2 * time.Second)
-			s.mu.Unlock()
-		}
+		s.cluster[i].rpcClient = client
 	}
-	if err != nil {
-		return false
-	}
+	client := s.cluster[i].rpcClient
+	s.mu.Unlock()
 
-	if err := rpcClient.Call(name, req, rsp); err != nil {
-		s.warnf("Error calling %s on %d: %v", name, id, err)
+	if err := client.Call(name, req, rsp); err != nil {
+		s.warnf("Error calling %s on %d: %v", name, s.cluster[i].Id, err)
 		s.mu.Lock()
-		if s.cluster[i].rpcClient == rpcClient {
-			s.cluster[i].rpcClient.Close()
-			s.cluster[i].rpcClient = nil
-		}
+		s.cluster[i].rpcClient = nil
 		s.mu.Unlock()
 		return false
 	}
@@ -1261,8 +1231,8 @@ func (s *Server) Start() {
 
 	rpcServer := rpc.NewServer()
 	rpcServer.Register(s)
-	// l, err := net.Listen("tcp", s.address)
-	l, err := rdmacm.Listen(s.address)
+	l, err := net.Listen("tcp", s.address)
+	//l, err := rdmacm.Listen(s.address)
 	if err != nil {
 		panic(err)
 	}

@@ -65,6 +65,6 @@ sudo ./pbastress_sv
 
 2-4. bench test
 
-go build -o bench_nvmeof_sv -tags raft  ./cmd/benchmarks/bench_nvmeof/main.go
+go build -o bench_nvmeof -tags raft  ./cmd/benchmarks/bench_nvmeof/main.go
 
-go build -o bench_goraft_sv  ./cmd/benchmarks/bench_goraft/main.go
+go build -o bench_goraft  ./cmd/benchmarks/bench_goraft/main.go

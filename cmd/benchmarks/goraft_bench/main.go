@@ -55,7 +55,7 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 	throughput := float64(n) / total.Seconds()
 
 	fmt.Printf("\n")
-	fmt.Printf("======= Experimental Parametesr =======\n")
+	fmt.Printf("======= Experimental Parameter ========\n")
 	fmt.Printf("%d entires, Batch: %d, Payload: %d\n", n, batch, payload)
 	fmt.Printf("=== goraft (file-based replication) ===\n")
 	fmt.Printf("  Total time   : %s\n", total)
@@ -123,6 +123,10 @@ func main() {
 	var latencies []time.Duration
 	start := time.Now()
 
+	reportInterval := *nEntries / 10
+	if reportInterval == 0 {
+		reportInterval = 1
+	}
 	for i := 0; i < *nEntries; i += *batchSize {
 		end := i + *batchSize
 		if end > *nEntries {
@@ -138,6 +142,12 @@ func main() {
 			os.Exit(1)
 		}
 		latencies = append(latencies, time.Since(t))
+		if (i/(*batchSize))%(reportInterval/(*batchSize)+1) == 0 {
+			fmt.Printf("[node %d] progress: %d / %d entries (%.0f%%) elapsed: %s\n",
+				server.Id(), i+len(batch), *nEntries,
+				float64(i+len(batch))*100/float64(*nEntries),
+				time.Since(start))
+		}
 	}
 
 	printStats(latencies, time.Since(start), *nEntries, *batchSize, *payloadSize)

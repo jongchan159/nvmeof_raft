@@ -56,8 +56,8 @@ main
 pbastress
 mdparser
 raft_server
-bench_goraft
-bench_nvmeof
+bench_goraft*
+bench_nvmeof*
 
 #statistics
 stat*.py

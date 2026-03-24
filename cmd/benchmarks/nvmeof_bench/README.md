@@ -26,6 +26,7 @@ Run from the project root (`~/nvmeof_raft`):
 ```console
 GOPATH=~/go 
 go build -tags raft -o bench_nvmeof ./cmd/benchmarks/nvmeof_bench/
+go build -tags raft_tcp -o bench_nvmeof_tcp ./cmd/benchmarks/nvmeof_bench/
 ```
 
 The binary is placed in the current directory.
@@ -51,11 +52,41 @@ Use `--entries`, `--batch`, and `--payload` to override the benchmark parameters
 # node 0  (eternity4) — drives benchmark
 sudo ./bench_nvmeof \
   --id=0 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme1n1 \
+  --partition-offset=1048576 \
+  --entries=100000 --batch=256 --payload=1024 \
+  --bench
+
+# node 1  (eternity5)
+sudo ./bench_nvmeof \
+  --id=1 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme2n1 \
+  --partition-offset=10738466816
+
+# node 2  (eternity6)
+sudo ./bench_nvmeof \
+  --id=2 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme0n1 \
+  --partition-offset=21475885056
+```
+
+#### TCP Version
+
+```console
+# node 0  (eternity4) — drives benchmark
+sudo ./bench_nvmeof \
+  --id=0 \
   --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
   --device=/dev/nvme1n1 \
   --partition-offset=1048576 \
-  --entries=10000 --batch=256 --payload=1024 \
+  --entries=100000 --batch=256 --payload=1024 \
   --bench
 
 # node 1  (eternity5)

@@ -1,6 +1,3 @@
-//go:build raft
-// +build raft
-
 package blockcopy
 
 /*

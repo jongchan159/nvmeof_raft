@@ -31,23 +31,25 @@ Use `--entries`, `--batch`, and `--payload` to override the benchmark parameters
 ```console
 # node 0  (eternity4)
 sudo ./bench_goraft --id=0 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --entries=10000 --batch=256 --payload=8192 \
+  --entries=10000 --batch=256 --payload=256 \
   --bench
 
 # node 1  (eternity5)
 sudo ./bench_goraft --id=1 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --bench
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
 
 # node 2  (eternity6)
 sudo ./bench_goraft --id=2 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --bench
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
 ```
+
+GOTRACEBACK=all sudo ./bench_goraft --id=2 \
+--peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+--metadata-dir=/mnt/nvmeof_raft/bench_goraft
 
 ### Local single-machine test
 
