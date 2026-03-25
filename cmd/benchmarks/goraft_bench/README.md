@@ -13,8 +13,10 @@ batch, 8 KB each).
 From the project root (`~/nvmeof_raft`):
 
 ```console
-GOPATH=~/go 
-go build -o bench_goraft ./cmd/benchmarks/goraft_bench/
+GOPATH=~/go
+# rmda RPC version
+go build -o bench_goraft -tags raft ./cmd/benchmarks/goraft_bench/
+# tcp/ip RPC version
 go build -o bench_goraft_tcp -tags raft_tcp ./cmd/benchmarks/goraft_bench/
 ```
 
@@ -34,7 +36,7 @@ Use `--entries`, `--batch`, and `--payload` to override the benchmark parameters
 sudo ./bench_goraft --id=0 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --entries=100000 --batch=256 --payload=8192 \
+  --entries=100000 --batch=16 --payload=65536 \
   --bench
 
 # node 1  (eternity5)
@@ -55,7 +57,7 @@ sudo ./bench_goraft --id=2 \
 sudo ./bench_goraft_tcp --id=0 \
   --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --entries=100000 --batch=256 --payload=256 \
+  --entries=100000 --batch=256 --payload=8192 \
   --bench
 
 # node 1  (eternity5)
@@ -66,6 +68,27 @@ sudo ./bench_goraft_tcp --id=1 \
 # node 2  (eternity6)
 sudo ./bench_goraft_tcp --id=2 \
   --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
+```
+
+#### TCP version with IPoIB
+
+```console
+# node 0  (eternity4)
+sudo ./bench_goraft_tcp --id=0 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
+  --entries=100000 --batch=256 --payload=256 \
+  --bench
+
+# node 1  (eternity5)
+sudo ./bench_goraft_tcp --id=1 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
+
+# node 2  (eternity6)
+sudo ./bench_goraft_tcp --id=2 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_goraft
 ```
 
@@ -110,15 +133,16 @@ killed after the leader finishes.
 [node 1] waiting to become stable leader...
 [node 1] is stable leader — starting benchmark (10000 entries, batch=256, payload=8192)
 
+======= Experimental Parameter ========
+100000 entires, Batch: 256, Payload: 8196
 === goraft (file-based replication) ===
-  Entries      : 10000
-  Total time   : 4.247886002s
-  Throughput   : 2354.11 entries/s
-  Latency avg  : 20.54898ms
-  Latency min  : 3.06882ms
-  Latency p50  : 20.338751ms
-  Latency p99  : 47.874673ms
-  Latency max  : 47.874673ms
+  Total time   : 1m36.900981163s
+  Throughput   : 1031.98 entries/s
+  Latency avg  : 162.559039ms
+  Latency min  : 99.141961ms
+  Latency p50  : 161.284558ms
+  Latency p99  : 185.819097ms
+  Latency max  : 199.88593ms
 ```
 
 > Numbers above are from a local `/dev/shm` run.

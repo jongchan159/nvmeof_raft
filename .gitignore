@@ -63,5 +63,5 @@ bench_nvmeof*
 stat*.py
 stat_image
 bin
-bench_logs
+bench_*
 *.sh

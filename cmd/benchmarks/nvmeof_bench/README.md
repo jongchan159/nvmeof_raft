@@ -21,11 +21,13 @@ batch, 8 KB each).
 ## Build
 
 The source uses the `raft` build tag to compile the NVMe-oF path.
-Run from the project root (`~/nvmeof_raft`):
+Run from the project root (`~/nvmeof_raft`):ß
 
 ```console
 GOPATH=~/go 
-go build -tags raft -o bench_nvmeof ./cmd/benchmarks/nvmeof_bench/
+# RDMA version
+go build -tags raft -o bench_nvmeof ./cmd/bßenchmarks/nvmeof_bench/
+# TCP version
 go build -tags raft_tcp -o bench_nvmeof_tcp ./cmd/benchmarks/nvmeof_bench/
 ```
 
@@ -54,9 +56,9 @@ sudo ./bench_nvmeof \
   --id=0 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme1n1 \
+  --device=/dev/nvme0n1 \
   --partition-offset=1048576 \
-  --entries=100000 --batch=256 --payload=8192 \
+  --entries=100000 --batch=16 --payload=65536 \
   --bench
 
 # node 1  (eternity5)
@@ -84,7 +86,7 @@ sudo ./bench_nvmeof_tcp \
   --id=0 \
   --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme1n1 \
+  --device=/dev/nvme0n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=256 --payload=8192 \
   --bench
@@ -93,7 +95,7 @@ sudo ./bench_nvmeof_tcp \
 sudo ./bench_nvmeof_tcp \
   --id=1 \
   --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeos \
   --device=/dev/nvme2n1 \
   --partition-offset=10738466816
 
@@ -104,6 +106,37 @@ sudo ./bench_nvmeof_tcp \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
   --device=/dev/nvme0n1 \
   --partition-offset=21475885056
+```
+
+#### TCP Version with IPoIB
+
+```console
+# node 0  (eternity4) — drives benchmark
+sudo ./bench_nvmeof_tcp \
+  --id=0 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme0n1 \
+  --partition-offset=1048576 \
+  --entries=100000 --batch=256 --payload=8192 \
+  --bench
+
+# node 1  (eternity5)
+sudo ./bench_nvmeof_tcp \
+  --id=1 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeos \
+  --device=/dev/nvme2n1 \
+  --partition-offset=10738466816
+
+# node 2  (eternity6)
+sudo ./bench_nvmeof_tcp \
+  --id=2 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme0n1 \
+  --partition-offset=21475885056
+
 ```
 
 ## Flags
@@ -147,3 +180,47 @@ sudo ./bench_nvmeof_tcp \
 | Log storage         | Single `.dat` file per node   | Ring buffer `.dat` + NVMe partition |
 | Device requirement  | Any writable directory        | NVMe block device + disk group      |
 | Build tag           | *(none)*                      | `-tags raft`                        |
+
+
+## 5-node test command
+# node 0 (eternity4) — drives benchmark
+sudo ./bench_nvmeof \
+  --id=0 \
+  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme1n1 \
+  --partition-offset=1048576 \
+  --entries=100000 --batch=16 --payload=65536 \
+  --bench
+
+# node 1 (eternity5)
+sudo ./bench_nvmeof \
+  --id=1 \
+  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme2n1 \
+  --partition-offset=53688139776
+
+# node 2 (eternity6)
+sudo ./bench_nvmeof \
+  --id=2 \
+  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme0n1 \
+  --partition-offset=107375230976
+
+# node 3 (eternity2)
+sudo ./bench_nvmeof \
+  --id=3 \
+  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme2n1 \
+  --partition-offset=161062322176
+
+# node 4 (eternity7)
+sudo ./bench_nvmeof \
+  --id=4 \
+  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme2n1 \
+  --partition-offset=214749413376

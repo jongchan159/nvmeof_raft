@@ -1,3 +1,24 @@
+## How to Set NVMe-overRDMA
+### If initiator server was rebooted
+
+Reload RDMA/IB modules                                                                 
+                                                                                        
+```console
+sudo modprobe ib_core
+sudo modprobe ib_uverbs                                                                   
+sudo modprobe rdma_cm                                                                     
+sudo modprobe nvme-rdma
+``` 
+
+if ib0 is down
+
+```console
+sudo nvme discover -t rdma -a 10.0.0.90 -s 4420
+sudo ip link set ib0 up
+sudo ip addr add 10.0.0.4/24 dev ib0
+sudo nvme connect -t rdma -a 10.0.0.90 -s 4420 -n raft
+```
+
 ## Configurance
 1. System Configurance
 Ubuntu 18.04.5 LTS

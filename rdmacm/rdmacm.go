@@ -8,6 +8,9 @@ package rdmacm
 #include <infiniband/verbs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -15,33 +18,22 @@ package rdmacm
 
 static int get_errno(void) { return errno; }
 
-// ---- buffer constants -------------------------------------------------------
-//
-// Each SEND/RECV carries one fragment:
-//   [4 B total_msg_len][4 B frag_byte_offset][payload ≤ RDMA_PAYLOAD_MAX]
-//
-// Large gob messages (e.g. 1 MiB AppendEntries) are fragmented by Write()
-// and reassembled by readLoop() before being fed into rdmaReader.
 #define RDMA_RECV_DEPTH   64
 #define RDMA_FRAG_SIZE    65536
 #define RDMA_HDR_SIZE     8
 #define RDMA_PAYLOAD_MAX  (RDMA_FRAG_SIZE - RDMA_HDR_SIZE)
 
-// ---- per-connection context -------------------------------------------------
-
 typedef struct {
-    struct rdma_event_channel *ec;       // private to this connection
+    struct rdma_event_channel *ec;
     struct rdma_cm_id         *id;
     struct ibv_pd             *pd;
-    struct ibv_comp_channel   *comp_ch;  // for recv CQ event notification
-    struct ibv_cq             *send_cq;  // polled inline (spin, no channel)
-    struct ibv_cq             *recv_cq;  // event-driven via comp_ch
+    struct ibv_comp_channel   *comp_ch;
+    struct ibv_cq             *send_cq;
+    struct ibv_cq             *recv_cq;
     struct ibv_qp             *qp;
-
-    uint8_t      *send_buf;              // RDMA_FRAG_SIZE, registered
+    uint8_t      *send_buf;
     struct ibv_mr *send_mr;
-
-    uint8_t      *recv_buf;              // RDMA_RECV_DEPTH * RDMA_FRAG_SIZE, registered
+    uint8_t      *recv_buf;
     struct ibv_mr *recv_mr;
 } rdma_ctx_t;
 
@@ -74,11 +66,18 @@ static rdma_ctx_t *ctx_create(struct rdma_cm_id *id,
     c->comp_ch = ibv_create_comp_channel(id->verbs);
     if (!c->comp_ch) goto fail;
 
+    // O_NONBLOCK so ctx_drain_events can loop until EAGAIN.
+    // ctx_wait_event uses poll() which works regardless of blocking mode.
+    {
+        int flags = fcntl(c->comp_ch->fd, F_GETFL);
+        if (flags < 0 || fcntl(c->comp_ch->fd, F_SETFL, flags | O_NONBLOCK))
+            goto fail;
+    }
+
     c->send_cq = ibv_create_cq(id->verbs, RDMA_RECV_DEPTH, NULL, NULL, 0);
     c->recv_cq = ibv_create_cq(id->verbs, RDMA_RECV_DEPTH, NULL, c->comp_ch, 0);
     if (!c->send_cq || !c->recv_cq) goto fail;
 
-    // Arm the recv CQ for completion notifications.
     if (ibv_req_notify_cq(c->recv_cq, 0)) goto fail;
 
     struct ibv_qp_init_attr qa;
@@ -142,16 +141,13 @@ static void ctx_destroy(rdma_ctx_t *c) {
     free(c);
 }
 
-// ---- send: fragment + spin-poll send CQ ------------------------------------
-//
-// Called from Go's Write().  Blocks only for microseconds (NIC ACK) without
-// tying up an OS thread in the kernel.
+// ---- send -------------------------------------------------------------------
 
 static int ctx_send_frag(rdma_ctx_t *c,
                          const void *data, int data_len,
                          uint32_t total_len, uint32_t frag_off) {
     uint32_t hdr[2] = {total_len, frag_off};
-    memcpy(c->send_buf,     hdr,  RDMA_HDR_SIZE);
+    memcpy(c->send_buf,                  hdr,  RDMA_HDR_SIZE);
     memcpy(c->send_buf + RDMA_HDR_SIZE, data, data_len);
 
     int msg_len = data_len + RDMA_HDR_SIZE;
@@ -171,34 +167,66 @@ static int ctx_send_frag(rdma_ctx_t *c,
     struct ibv_send_wr *bad = NULL;
     if (ibv_post_send(c->qp, &wr, &bad)) return -1;
 
-    // Spin-poll the send CQ — pure user-space, no syscall.
     struct ibv_wc wc;
     for (;;) {
         int n = ibv_poll_cq(c->send_cq, 1, &wc);
-        if (n > 0) return (wc.status == IBV_WC_SUCCESS) ? 0 : -1;
-        if (n < 0)  return -1;
+        if (n > 0) {
+            if (wc.status == IBV_WC_SUCCESS) return 0;
+            errno = EIO;  // QP error; wc.status has the ibv_wc_status code
+            return -1;
+        }
+        if (n < 0) return -1;
     }
 }
 
-// ---- recv: event-driven notification + non-blocking drain ------------------
+// ---- recv: poll-based wait with interrupt pipe ------------------------------
 //
-// ctx_wait_recv() blocks in ibv_get_cq_event() — the kernel signals the
-// comp_channel fd when the NIC posts a completion.  The NIC DMA'd the
-// payload into c->recv_buf WITHOUT any kernel involvement; only the
-// notification goes through the kernel.
+// ctx_wait_event blocks in poll() on two fds:
+//   - comp_ch->fd : NIC completion notification
+//   - interrupt_fd: write end of a Go-managed pipe; written by Close()
 //
-// After waking, ctx_poll_recv() drains completions without any syscall.
+// Returns: 1 = comp event ready, 0 = interrupted (Close called), -1 = error.
+//
+// This runs in a dedicated CGo goroutine (one OS thread consumed while
+// waiting), keeping readLoop goroutine free to park in Go's scheduler.
 
-static int ctx_wait_recv(rdma_ctx_t *c) {
-    struct ibv_cq *ev_cq;
-    void *ev_ctx;
-    if (ibv_get_cq_event(c->comp_ch, &ev_cq, &ev_ctx)) return -1;
-    ibv_ack_cq_events(ev_cq, 1);
-    return ibv_req_notify_cq(ev_cq, 0);  // re-arm for next event
+static int ctx_wait_event(rdma_ctx_t *c, int interrupt_fd) {
+    struct pollfd pfds[2];
+    pfds[0].fd     = c->comp_ch->fd;
+    pfds[0].events = POLLIN;
+    pfds[1].fd     = interrupt_fd;
+    pfds[1].events = POLLIN;
+    int r;
+    do { r = poll(pfds, 2, -1); } while (r < 0 && errno == EINTR);
+    if (r <= 0) return -1;
+    if (pfds[0].revents & POLLIN) return 1;
+    return 0;  // interrupt_fd readable -> Close() was called
 }
 
-// Returns payload bytes (> 0), 0 if CQ empty, -1 on error.
-// Sets *total_len and *frag_off from the fragment header.
+// ctx_drain_events: consume all pending events from comp_ch (non-blocking),
+// ack them, and re-arm the CQ.
+// Returns: > 0 events processed, 0 EAGAIN (none pending), -1 error.
+static int ctx_drain_events(rdma_ctx_t *c) {
+    int n = 0;
+    for (;;) {
+        struct ibv_cq *ev_cq;
+        void          *ev_ctx;
+        if (ibv_get_cq_event(c->comp_ch, &ev_cq, &ev_ctx)) {
+            int e = errno;
+            if (e == EAGAIN || e == EWOULDBLOCK) break;
+            return -1;
+        }
+        n++;
+    }
+    if (n > 0) {
+        ibv_ack_cq_events(c->recv_cq, n);
+        if (ibv_req_notify_cq(c->recv_cq, 0)) return -1;
+    }
+    return n;
+}
+
+// ---- recv: non-blocking CQ poll --------------------------------------------
+
 static int ctx_poll_recv(rdma_ctx_t *c,
                          void *dst, int dst_max,
                          uint32_t *total_len, uint32_t *frag_off) {
@@ -206,7 +234,7 @@ static int ctx_poll_recv(rdma_ctx_t *c,
     int n = ibv_poll_cq(c->recv_cq, 1, &wc);
     if (n == 0) return 0;
     if (n < 0 || wc.status != IBV_WC_SUCCESS) return -1;
-    if (wc.opcode != IBV_WC_RECV) return 0;  // shouldn't happen on recv_cq
+    if (wc.opcode != IBV_WC_RECV) return 0;
 
     uint8_t *slot = c->recv_buf + wc.wr_id * RDMA_FRAG_SIZE;
     uint32_t hdr[2];
@@ -218,7 +246,6 @@ static int ctx_poll_recv(rdma_ctx_t *c,
     if (payload < 0) { post_recv_slot(c, (uint32_t)wc.wr_id); return -1; }
     int copy = (payload < dst_max) ? payload : dst_max;
     memcpy(dst, slot + RDMA_HDR_SIZE, copy);
-
     post_recv_slot(c, (uint32_t)wc.wr_id);
     return copy;
 }
@@ -226,15 +253,13 @@ static int ctx_poll_recv(rdma_ctx_t *c,
 // ---- address helpers --------------------------------------------------------
 
 static void ctx_local_addr(rdma_ctx_t *c, char *buf, uint16_t *port) {
-    struct sockaddr_in *sa =
-        (struct sockaddr_in *)rdma_get_local_addr(c->id);
+    struct sockaddr_in *sa = (struct sockaddr_in *)rdma_get_local_addr(c->id);
     inet_ntop(AF_INET, &sa->sin_addr, buf, INET_ADDRSTRLEN);
     *port = ntohs(sa->sin_port);
 }
 
 static void ctx_peer_addr(rdma_ctx_t *c, char *buf, uint16_t *port) {
-    struct sockaddr_in *sa =
-        (struct sockaddr_in *)rdma_get_peer_addr(c->id);
+    struct sockaddr_in *sa = (struct sockaddr_in *)rdma_get_peer_addr(c->id);
     inet_ntop(AF_INET, &sa->sin_addr, buf, INET_ADDRSTRLEN);
     *port = ntohs(sa->sin_port);
 }
@@ -271,21 +296,17 @@ fail:
     return NULL;
 }
 
-// Blocks until one connection is fully established.
-// Returns NULL on error.
 static rdma_ctx_t *listener_accept(rdma_listener_t *l) {
     struct rdma_cm_event *ev;
     for (;;) {
         if (rdma_get_cm_event(l->ec, &ev)) return NULL;
         if (ev->event == RDMA_CM_EVENT_CONNECT_REQUEST) break;
-        rdma_ack_cm_event(ev);  // skip unrelated events
+        rdma_ack_cm_event(ev);
     }
 
     struct rdma_cm_id *new_id = ev->id;
     rdma_ack_cm_event(ev);
 
-    // Migrate the new CM ID to its own event channel so the listener's
-    // channel stays clean (only CONNECT_REQUEST events arrive there).
     struct rdma_event_channel *conn_ec = rdma_create_event_channel();
     if (!conn_ec) { rdma_destroy_id(new_id); return NULL; }
     if (rdma_migrate_id(new_id, conn_ec)) {
@@ -305,9 +326,10 @@ static rdma_ctx_t *listener_accept(rdma_listener_t *l) {
     memset(&cp, 0, sizeof(cp));
     cp.responder_resources = 1;
     cp.initiator_depth     = 1;
+    cp.retry_count         = 7;  // retry on transport error
+    cp.rnr_retry_count     = 7;  // 7 = infinite retry on RNR NAK
     if (rdma_accept(new_id, &cp)) { ctx_destroy(ctx); return NULL; }
 
-    // Wait for ESTABLISHED on the connection-private event channel.
     if (rdma_get_cm_event(conn_ec, &ev)) { ctx_destroy(ctx); return NULL; }
     int ok = (ev->event == RDMA_CM_EVENT_ESTABLISHED);
     rdma_ack_cm_event(ev);
@@ -358,6 +380,8 @@ static rdma_ctx_t *conn_create(const char *ip, int port) {
     memset(&cp, 0, sizeof(cp));
     cp.responder_resources = 1;
     cp.initiator_depth     = 1;
+    cp.retry_count         = 7;  // retry on transport error
+    cp.rnr_retry_count     = 7;  // 7 = infinite retry on RNR NAK
     if (rdma_connect(id, &cp)) { ctx_destroy(ctx); return NULL; }
 
     if (rdma_get_cm_event(ec, &ev)) { ctx_destroy(ctx); return NULL; }
@@ -380,6 +404,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -502,55 +527,120 @@ func (r *rdmaReader) setDeadline(t time.Time) {
 
 // ---- net.Conn ---------------------------------------------------------------
 
-// fragBufSize must match C's RDMA_PAYLOAD_MAX
 const fragBufSize = C.RDMA_FRAG_SIZE - C.RDMA_HDR_SIZE
 
 type rdmaConn struct {
-	ctx   *C.rdma_ctx_t
-	laddr rdmaAddr
-	raddr rdmaAddr
-	rd    *rdmaReader
+	ctx       *C.rdma_ctx_t
+	laddr     rdmaAddr
+	raddr     rdmaAddr
+	rd        *rdmaReader
+	// eventCh carries the number of CQ events drained (> 0), or -1 on error.
+	// Buffered so eventWatcher can exit without readLoop consuming immediately.
+	eventCh   chan int
+	// closeDone is closed by Close() to unblock goroutines waiting on selects.
+	closeDone chan struct{}
+	// wakeWFd is the write end of an interrupt pipe; Close() writes one byte
+	// to unblock poll() in eventWatcher's CGo call.
+	wakeWFd   int
+	// wg tracks eventWatcher so Close() waits before destroying C resources.
+	wg        sync.WaitGroup
 }
 
 func newRdmaConn(ctx *C.rdma_ctx_t) *rdmaConn {
-	c := &rdmaConn{
-		ctx:   ctx,
-		laddr: rdmaAddr{ctxAddrString(ctx, true)},
-		raddr: rdmaAddr{ctxAddrString(ctx, false)},
-		rd:    newRdmaReader(),
+	// Create a self-pipe so Close() can interrupt ctx_wait_event's poll().
+	var pipeFds [2]int
+	if err := syscall.Pipe(pipeFds[:]); err != nil {
+		panic(fmt.Sprintf("rdma: pipe: %v", err))
 	}
+	// pipeFds[0] = read end (passed to eventWatcher / C poll)
+	// pipeFds[1] = write end (written by Close)
+
+	c := &rdmaConn{
+		ctx:       ctx,
+		laddr:     rdmaAddr{ctxAddrString(ctx, true)},
+		raddr:     rdmaAddr{ctxAddrString(ctx, false)},
+		rd:        newRdmaReader(),
+		eventCh:   make(chan int, 1),
+		closeDone: make(chan struct{}),
+		wakeWFd:   pipeFds[1],
+	}
+	c.wg.Add(1)
+	go c.eventWatcher(pipeFds[0])
 	go c.readLoop()
 	return c
 }
 
-// readLoop blocks in ibv_get_cq_event (one OS thread, but data arrives via
-// NIC DMA without kernel involvement), then drains completions with
-// ibv_poll_cq (pure user-space reads of the CQ memory region).
+// eventWatcher is a dedicated goroutine that blocks in poll() via CGo.
+// It consumes one OS thread while waiting, but that is unavoidable without
+// Go 1.12's SyscallConn.  Crucially, readLoop does NOT block in CGo —
+// it parks in Go's scheduler waiting on eventCh.
+func (c *rdmaConn) eventWatcher(wakeRFd int) {
+	defer c.wg.Done()
+	defer syscall.Close(wakeRFd)
+
+	for {
+		// Blocks in poll() — one OS thread consumed here, not in readLoop.
+		r := C.ctx_wait_event(c.ctx, C.int(wakeRFd))
+		if r <= 0 {
+			// 0 = wakeRFd readable (Close called), -1 = poll error.
+			select {
+			case c.eventCh <- -1:
+			case <-c.closeDone:
+			}
+			return
+		}
+		// Drain all pending CQ events non-blocking (comp_ch->fd is O_NONBLOCK).
+		n := C.ctx_drain_events(c.ctx)
+		if n < 0 {
+			select {
+			case c.eventCh <- -1:
+			case <-c.closeDone:
+			}
+			return
+		}
+		if n > 0 {
+			select {
+			case c.eventCh <- int(n):
+			case <-c.closeDone:
+				return
+			}
+		}
+		// n == 0 (EAGAIN after wait) is unexpected but harmless — loop again.
+	}
+}
+
+// readLoop parks in Go's scheduler waiting on eventCh; zero OS threads consumed.
 func (c *rdmaConn) readLoop() {
 	fragBuf := make([]byte, fragBufSize)
 	var assemblyBuf   []byte
 	var assemblyTotal int
 
 	for {
-		// Block until at least one recv completion event is available.
-		// The NIC has already DMA'd data into recv_buf; only the notification
-		// goes through the kernel.
-		if C.ctx_wait_recv(c.ctx) < 0 {
-			c.rd.setError(fmt.Errorf("rdma: recv wait failed: %v", cErrno()))
+		// Park goroutine in Go's scheduler — no CGo, no OS thread held here.
+		var n int
+		select {
+		case n = <-c.eventCh:
+		case <-c.closeDone:
+			return
+		}
+		if n <= 0 {
+			if n < 0 {
+				c.rd.setError(fmt.Errorf("rdma: recv event failed"))
+			}
 			return
 		}
 
-		// Drain all pending recv completions without any syscall.
+		// Drain all pending recv completions — pure user-space CQ reads.
 		for {
 			var totalLen, fragOff C.uint32_t
-			n := C.ctx_poll_recv(c.ctx,
+			got := C.ctx_poll_recv(c.ctx,
 				unsafe.Pointer(&fragBuf[0]), C.int(len(fragBuf)),
 				&totalLen, &fragOff)
-			if n == 0 {
+			if got == 0 {
 				break
 			}
-			if n < 0 {
-				c.rd.setError(fmt.Errorf("rdma: recv failed"))
+			if got < 0 {
+				c.rd.setError(fmt.Errorf("rdma: poll recv failed"))
 				return
 			}
 
@@ -561,8 +651,8 @@ func (c *rdmaConn) readLoop() {
 				assemblyBuf = make([]byte, total)
 				assemblyTotal = total
 			}
-			copy(assemblyBuf[off:], fragBuf[:int(n)])
-			if off+int(n) >= assemblyTotal {
+			copy(assemblyBuf[off:], fragBuf[:int(got)])
+			if off+int(got) >= assemblyTotal {
 				if !c.rd.feed(assemblyBuf) {
 					return
 				}
@@ -576,9 +666,6 @@ func (c *rdmaConn) Read(b []byte) (int, error) {
 	return c.rd.Read(b)
 }
 
-// Write fragments b into ≤64 KiB chunks and sends each over ibverbs SEND.
-// ibv_post_send + spin-poll ibv_poll_cq (send_cq) — no syscall on the
-// critical path; the NIC DMA's from registered memory directly.
 func (c *rdmaConn) Write(b []byte) (int, error) {
 	total := len(b)
 	offset := 0
@@ -599,8 +686,14 @@ func (c *rdmaConn) Write(b []byte) (int, error) {
 	return total, nil
 }
 
+// Close signals both goroutines to stop, waits for eventWatcher to finish
+// with all CGo resources, then destroys the ibverbs context.
 func (c *rdmaConn) Close() error {
 	c.rd.setError(io.ErrClosedPipe)
+	close(c.closeDone)                       // unblock select in readLoop and eventWatcher
+	syscall.Write(c.wakeWFd, []byte{0})      // unblock poll() in eventWatcher CGo call
+	syscall.Close(c.wakeWFd)
+	c.wg.Wait()                              // ensure eventWatcher is done with C resources
 	C.ctx_destroy(c.ctx)
 	return nil
 }
@@ -650,7 +743,6 @@ func (l *rdmaListener) Addr() net.Addr { return l.addr }
 
 // ---- public API -------------------------------------------------------------
 
-// Listen creates an RDMA listener on addr (host:port) using IB RC QPs.
 func Listen(addr string) (net.Listener, error) {
 	host, port, err := parseAddr(addr)
 	if err != nil {
@@ -665,7 +757,6 @@ func Listen(addr string) (net.Listener, error) {
 	return &rdmaListener{l: l, addr: rdmaAddr{addr}}, nil
 }
 
-// Dial opens an RDMA RC connection to addr (host:port).
 func Dial(addr string) (net.Conn, error) {
 	host, port, err := parseAddr(addr)
 	if err != nil {
