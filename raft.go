@@ -1136,7 +1136,7 @@ func (s *Server) appendEntries() {
 					return
 				}
 				leaderPbaSrc = pbaSrc
-				logBlockLength = pbaBytes / uint64(BLOCK_UNIT)
+				logBlockLength = totalSlots
 			}
 
 			req := AppendEntriesRequest{
