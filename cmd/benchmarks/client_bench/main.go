@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -32,10 +33,10 @@ type ClientApplyResponse struct {
 
 var letters = []byte("abcdefghijklmnopqrstuvwxyz")
 
-func randomPayload(size int) []byte {
+func randomPayloadRng(rng *rand.Rand, size int) []byte {
 	b := make([]byte, size)
 	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+		b[i] = letters[rng.Intn(len(letters))]
 	}
 	return b
 }
@@ -66,12 +67,6 @@ func findLeader(peers []string) (string, *rpc.Client, error) {
 }
 
 func printStats(latencies []time.Duration, total time.Duration, n, batch, payload, threads int) {
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	var sum time.Duration
-	for _, l := range latencies {
-		sum += l
-	}
-	avg := sum / time.Duration(len(latencies))
 	throughput := float64(n) / total.Seconds()
 
 	fmt.Printf("\n")
@@ -79,8 +74,18 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 	fmt.Printf("%d entries, Batch: %d, Payload: %d, Threads: %d\n", n, batch, payload, threads)
 	fmt.Printf("=== client bench (remote Apply) ===\n")
 	fmt.Printf("  Total time     : %s\n", total)
-	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
 	fmt.Printf("  Throughput     : %.2f entries/s\n", throughput)
+	if len(latencies) == 0 {
+		fmt.Printf("  Latency        : no samples\n")
+		return
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	var sum time.Duration
+	for _, l := range latencies {
+		sum += l
+	}
+	avg := sum / time.Duration(len(latencies))
+	fmt.Printf("  Latency/entry (last drain removed, %d samples)\n", len(latencies))
 	fmt.Printf("  Latency avg    : %s\n", avg)
 	fmt.Printf("  Latency min    : %s\n", latencies[0])
 	fmt.Printf("  Latency p50    : %s\n", latencies[len(latencies)*50/100])
@@ -101,8 +106,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	rand.Seed(time.Now().UnixNano())
-
 	peers := strings.Split(*peersStr, ",")
 	for i := range peers {
 		peers[i] = strings.TrimSpace(peers[i])
@@ -115,8 +118,6 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Leader: %s\n", leaderAddr)
-	fmt.Printf("Benchmark: %d entries, batch=%d, payload=%d, threads=%d\n",
-		*nEntries, *batchSize, *payloadSize, *nThreads)
 
 	// Each thread gets its own RPC connection to avoid send-side serialization.
 	clients := make([]*rpc.Client, *nThreads)
@@ -135,6 +136,36 @@ func main() {
 		}
 	}()
 
+	// Warmup: all threads send dummy entries for 5s to prime the Raft pipeline.
+	fmt.Printf("Warming up for 5s...\n")
+	warmupDone := make(chan struct{})
+	time.AfterFunc(5*time.Second, func() { close(warmupDone) })
+	var warmupWg sync.WaitGroup
+	for t := 0; t < *nThreads; t++ {
+		warmupWg.Add(1)
+		go func(tid int) {
+			defer warmupWg.Done()
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(tid)))
+			for {
+				select {
+				case <-warmupDone:
+					return
+				default:
+				}
+				cmds := make([][]byte, *batchSize)
+				for k := range cmds {
+					cmds[k] = randomPayloadRng(rng, *payloadSize)
+				}
+				req := ClientApplyRequest{Commands: cmds}
+				var rsp ClientApplyResponse
+				clients[tid].Call("Server.HandleClientApply", &req, &rsp)
+			}
+		}(t)
+	}
+	warmupWg.Wait()
+	fmt.Printf("Warmup done. Starting benchmark: %d entries, batch=%d, payload=%d, threads=%d\n",
+		*nEntries, *batchSize, *payloadSize, *nThreads)
+
 	entriesPerThread := *nEntries / *nThreads
 	type threadResult struct {
 		latencies []time.Duration
@@ -145,15 +176,14 @@ func main() {
 	var done int64 // atomic counter: total entries submitted across all threads
 	start := time.Now()
 
-	// Progress reporter: prints every ~10% of total entries.
+	// Progress reporter: prints every second.
 	reportStop := make(chan struct{})
 	go func() {
-		reportInterval := time.Second
 		for {
 			select {
 			case <-reportStop:
 				return
-			case <-time.After(reportInterval):
+			case <-time.After(time.Second):
 				n := atomic.LoadInt64(&done)
 				pct := float64(n) * 100 / float64(*nEntries)
 				elapsed := time.Since(start)
@@ -164,11 +194,10 @@ func main() {
 		}
 	}()
 
-	warmupEnd := start.Add(5 * time.Second)
-
 	for t := 0; t < *nThreads; t++ {
 		results[t] = make(chan threadResult, 1)
 		go func(tid int) {
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(tid)))
 			client := clients[tid]
 			var lats []time.Duration
 			for i := 0; i < entriesPerThread; i += *batchSize {
@@ -176,9 +205,9 @@ func main() {
 				if end > entriesPerThread {
 					end = entriesPerThread
 				}
-				var cmds [][]byte
-				for k := i; k < end; k++ {
-					cmds = append(cmds, randomPayload(*payloadSize))
+				cmds := make([][]byte, end-i)
+				for k := range cmds {
+					cmds[k] = randomPayloadRng(rng, *payloadSize)
 				}
 				req := ClientApplyRequest{Commands: cmds}
 				var rsp ClientApplyResponse
@@ -192,11 +221,9 @@ func main() {
 					return
 				}
 				atomic.AddInt64(&done, int64(len(cmds)))
-				if t0.After(warmupEnd) {
-					lats = append(lats, time.Since(t0)/time.Duration(len(cmds)))
-				}
+				lats = append(lats, time.Since(t0)/time.Duration(len(cmds)))
 			}
-			// Drop last batch (pipeline drain)
+			// Drop last batch (pipeline drain artifact)
 			if len(lats) > 0 {
 				lats = lats[:len(lats)-1]
 			}

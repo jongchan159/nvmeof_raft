@@ -26,7 +26,7 @@ Run from the project root (`~/nvmeof_raft`):ß
 ```console
 GOPATH=~/go 
 # RDMA version
-go build -tags raft -o bench_nvmeof ./cmd/bßenchmarks/nvmeof_bench/
+go build -tags raft -o bench_nvmeof ./cmd/benchmarks/nvmeof_bench/
 # TCP version
 go build -tags raft_tcp -o bench_nvmeof_tcp ./cmd/benchmarks/nvmeof_bench/
 ```

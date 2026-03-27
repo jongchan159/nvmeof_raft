@@ -45,12 +45,6 @@ func parsePeers(peersStr string) []goraft.ClusterMember {
 }
 
 func printStats(latencies []time.Duration, total time.Duration, n, batch, payload int) {
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	var sum time.Duration
-	for _, l := range latencies {
-		sum += l
-	}
-	avg := sum / time.Duration(len(latencies))
 	throughput := float64(n) / total.Seconds()
 
 	fmt.Printf("\n")
@@ -58,8 +52,18 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 	fmt.Printf("%d entries, Batch: %d, Payload: %d\n", n, batch, payload)
 	fmt.Printf("=== goraft (file-based replication) ===\n")
 	fmt.Printf("  Total time     : %s\n", total)
-	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
 	fmt.Printf("  Throughput     : %.2f entries/s\n", throughput)
+	if len(latencies) == 0 {
+		fmt.Printf("  Latency        : no samples (all entries completed within warmup window)\n")
+		return
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	var sum time.Duration
+	for _, l := range latencies {
+		sum += l
+	}
+	avg := sum / time.Duration(len(latencies))
+	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
 	fmt.Printf("  Latency avg    : %s\n", avg)
 	fmt.Printf("  Latency min    : %s\n", latencies[0])
 	fmt.Printf("  Latency p50    : %s\n", latencies[len(latencies)*50/100])
@@ -128,12 +132,25 @@ func main() {
 		}
 		fmt.Printf("[node %d] lost leadership, waiting again...\n", cluster[*id].Id)
 	}
-	fmt.Printf("[node %d] is stable leader — starting benchmark (%d entries, batch=%d, payload=%d)\n",
+	// Warmup: send dummy entries for 5s to prime the Raft pipeline.
+	fmt.Printf("[node %d] warming up for 5s...\n", server.Id())
+	warmupEnd := time.Now().Add(5 * time.Second)
+	for time.Now().Before(warmupEnd) {
+		batch := make([][]byte, *batchSize)
+		for k := range batch {
+			batch[k] = randomPayload(*payloadSize)
+		}
+		if _, err := server.Apply(batch); err != nil {
+			fmt.Printf("[node %d] lost leadership during warmup: %v\n", server.Id(), err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("[node %d] warmup done — starting benchmark (%d entries, batch=%d, payload=%d)\n",
 		server.Id(), *nEntries, *batchSize, *payloadSize)
 
 	var latencies []time.Duration
 	start := time.Now()
-	warmupEnd := start.Add(5 * time.Second)
 
 	reportInterval := *nEntries / 10
 	if reportInterval == 0 {
@@ -144,18 +161,16 @@ func main() {
 		if end > *nEntries {
 			end = *nEntries
 		}
-		var batch [][]byte
-		for k := i; k < end; k++ {
-			batch = append(batch, randomPayload(*payloadSize))
+		batch := make([][]byte, end-i)
+		for k := range batch {
+			batch[k] = randomPayload(*payloadSize)
 		}
 		t := time.Now()
 		if _, err := server.Apply(batch); err != nil {
 			fmt.Printf("[node %d] lost leadership during benchmark: %v\n", server.Id(), err)
 			os.Exit(1)
 		}
-		if t.After(warmupEnd) {
-			latencies = append(latencies, time.Since(t)/time.Duration(len(batch)))
-		}
+		latencies = append(latencies, time.Since(t)/time.Duration(len(batch)))
 		if (i/(*batchSize))%(reportInterval/(*batchSize)+1) == 0 {
 			fmt.Printf("[node %d] progress: %d / %d entries (%.0f%%) elapsed: %s\n",
 				server.Id(), i+len(batch), *nEntries,
@@ -163,7 +178,7 @@ func main() {
 				time.Since(start))
 		}
 	}
-	// Drop last batch (pipeline drain)
+	// Drop last batch (pipeline drain artifact)
 	if len(latencies) > 0 {
 		latencies = latencies[:len(latencies)-1]
 	}
