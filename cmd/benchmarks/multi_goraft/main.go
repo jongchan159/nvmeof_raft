@@ -51,7 +51,7 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 		sum += l
 	}
 	avg := sum / time.Duration(len(latencies))
-	stableThroughput := 1.0 / (float64(avg) / float64(time.Second))
+	throughput := float64(n) / total.Seconds()
 
 	fmt.Printf("\n")
 	fmt.Printf("======= Experimental Parameters ========\n")
@@ -59,7 +59,7 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 	fmt.Printf("=== goraft (file-based replication) ===\n")
 	fmt.Printf("  Total time     : %s\n", total)
 	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
-	fmt.Printf("  Throughput     : %.2f entries/s\n", stableThroughput)
+	fmt.Printf("  Throughput     : %.2f entries/s\n", throughput)
 	fmt.Printf("  Latency avg    : %s\n", avg)
 	fmt.Printf("  Latency min    : %s\n", latencies[0])
 	fmt.Printf("  Latency p50    : %s\n", latencies[len(latencies)*50/100])
