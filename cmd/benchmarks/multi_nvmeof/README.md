@@ -40,7 +40,7 @@ sudo ./bench_multi_nvmeof \
   --device=/dev/nvme1n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=16 --payload=65536 --threads=4 \
-  --bench
+  --heartbeat-ms=100
 
 # node 1 — eternity5 (follower)
 sudo ./bench_multi_nvmeof \

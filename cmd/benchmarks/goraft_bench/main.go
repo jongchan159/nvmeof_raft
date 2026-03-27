@@ -52,19 +52,20 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 		sum += l
 	}
 	avg := sum / time.Duration(len(latencies))
-	throughput := float64(n) / total.Seconds()
+	stableThroughput := 1.0 / (float64(avg) / float64(time.Second))
 
 	fmt.Printf("\n")
-	fmt.Printf("======= Experimental Parameter ========\n")
-	fmt.Printf("%d entires, Batch: %d, Payload: %d\n", n, batch, payload)
+	fmt.Printf("======= Experimental Parameters ========\n")
+	fmt.Printf("%d entries, Batch: %d, Payload: %d\n", n, batch, payload)
 	fmt.Printf("=== goraft (file-based replication) ===\n")
-	fmt.Printf("  Total time   : %s\n", total)
-	fmt.Printf("  Throughput   : %.2f entries/s\n", throughput)
-	fmt.Printf("  Latency avg  : %s\n", avg)
-	fmt.Printf("  Latency min  : %s\n", latencies[0])
-	fmt.Printf("  Latency p50  : %s\n", latencies[len(latencies)*50/100])
-	fmt.Printf("  Latency p99  : %s\n", latencies[len(latencies)*99/100])
-	fmt.Printf("  Latency max  : %s\n", latencies[len(latencies)-1])
+	fmt.Printf("  Total time     : %s\n", total)
+	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
+	fmt.Printf("  Throughput     : %.2f entries/s\n", stableThroughput)
+	fmt.Printf("  Latency avg    : %s\n", avg)
+	fmt.Printf("  Latency min    : %s\n", latencies[0])
+	fmt.Printf("  Latency p50    : %s\n", latencies[len(latencies)*50/100])
+	fmt.Printf("  Latency p99    : %s\n", latencies[len(latencies)*99/100])
+	fmt.Printf("  Latency max    : %s\n", latencies[len(latencies)-1])
 }
 
 func main() {
@@ -122,6 +123,7 @@ func main() {
 
 	var latencies []time.Duration
 	start := time.Now()
+	warmupEnd := start.Add(5 * time.Second)
 
 	reportInterval := *nEntries / 10
 	if reportInterval == 0 {
@@ -141,13 +143,19 @@ func main() {
 			fmt.Printf("[node %d] lost leadership during benchmark: %v\n", server.Id(), err)
 			os.Exit(1)
 		}
-		latencies = append(latencies, time.Since(t))
+		if t.After(warmupEnd) {
+			latencies = append(latencies, time.Since(t)/time.Duration(len(batch)))
+		}
 		if (i/(*batchSize))%(reportInterval/(*batchSize)+1) == 0 {
 			fmt.Printf("[node %d] progress: %d / %d entries (%.0f%%) elapsed: %s\n",
 				server.Id(), i+len(batch), *nEntries,
 				float64(i+len(batch))*100/float64(*nEntries),
 				time.Since(start))
 		}
+	}
+	// Drop last batch (pipeline drain)
+	if len(latencies) > 0 {
+		latencies = latencies[:len(latencies)-1]
 	}
 
 	printStats(latencies, time.Since(start), *nEntries, *batchSize, *payloadSize)

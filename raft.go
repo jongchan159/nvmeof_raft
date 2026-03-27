@@ -29,9 +29,9 @@ const PAGE_SIZE = 4096
 const HEADER_SIZE = BLOCK_UNIT
 const RING_OFFSET = HEADER_SIZE
 
-const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT  // 8
-const NUM_PAGES = 2048*16                         // modify this constant to extent disk space
-const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE
+const SLOTS_PER_PAGE = PAGE_SIZE / BLOCK_UNIT   // 8
+const NUM_PAGES = 65536						    // modify this constant to extent disk space
+const TOTAL_SLOTS = NUM_PAGES * SLOTS_PER_PAGE	// current 32MB
 const RING_SLOTS = TOTAL_SLOTS - 1
 // ============================================================ 
 
@@ -155,7 +155,7 @@ type Server struct {
 	id               uint64
 	address          string
 	electionTimeout  time.Time
-	heartbeatMs      int
+	HeartbeatMs      int
 	heartbeatTimeout time.Time
 	statemachine     StateMachine
 	metadataDir      string
@@ -629,7 +629,7 @@ func NewServer(
 		devicePath:           devicePath,
 		partitionOffsetBytes: partitionOffsetBytes,
 
-		heartbeatMs: 300,
+		HeartbeatMs: 300,
 		mu:          sync.Mutex{},
 		logSlotMap:  make(map[uint64]slotRange),
 	}
@@ -1186,7 +1186,7 @@ func (s *Server) appendEntries() {
 // Election / Leadership
 // ============================================================
 func (s *Server) resetElectionTimeout() {
-	interval := time.Duration(rand.Intn(s.heartbeatMs*2) + s.heartbeatMs*2)
+	interval := time.Duration(rand.Intn(s.HeartbeatMs*2) + s.HeartbeatMs*2)
 	s.electionTimeout = time.Now().Add(interval * time.Millisecond)
 }
 
@@ -1246,7 +1246,7 @@ func (s *Server) heartbeat() {
 		s.mu.Unlock()
 		return
 	}
-	s.heartbeatTimeout = time.Now().Add(time.Duration(s.heartbeatMs) * time.Millisecond)
+	s.heartbeatTimeout = time.Now().Add(time.Duration(s.HeartbeatMs) * time.Millisecond)
 	s.mu.Unlock()
 	s.appendEntries()
 }

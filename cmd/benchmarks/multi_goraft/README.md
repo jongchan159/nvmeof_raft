@@ -28,8 +28,7 @@ sudo ./bench_multi_goraft \
   --id=0 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_goraft \
-  --entries=100000 --batch=256 --payload=8192 --threads=8 \
-  --bench
+  --heartbeat-ms=100
 
 # node 1 — eternity5 (follower)
 sudo ./bench_multi_goraft \

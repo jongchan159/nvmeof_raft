@@ -155,7 +155,7 @@ type Server struct {
 	id               uint64
 	address          string
 	electionTimeout  time.Time
-	heartbeatMs      int
+	HeartbeatMs      int
 	heartbeatTimeout time.Time
 	statemachine     StateMachine
 	metadataDir      string
@@ -629,7 +629,7 @@ func NewServer(
 		devicePath:           devicePath,
 		partitionOffsetBytes: partitionOffsetBytes,
 
-		heartbeatMs: 300,
+		HeartbeatMs: 300,
 		mu:          sync.Mutex{},
 		logSlotMap:  make(map[uint64]slotRange),
 	}
@@ -1156,7 +1156,7 @@ func (s *Server) appendEntries() {
 // Election / Leadership
 // ============================================================
 func (s *Server) resetElectionTimeout() {
-	interval := time.Duration(rand.Intn(s.heartbeatMs*2) + s.heartbeatMs*2)
+	interval := time.Duration(rand.Intn(s.HeartbeatMs*2) + s.HeartbeatMs*2)
 	s.electionTimeout = time.Now().Add(interval * time.Millisecond)
 }
 
@@ -1216,7 +1216,7 @@ func (s *Server) heartbeat() {
 		s.mu.Unlock()
 		return
 	}
-	s.heartbeatTimeout = time.Now().Add(time.Duration(s.heartbeatMs) * time.Millisecond)
+	s.heartbeatTimeout = time.Now().Add(time.Duration(s.HeartbeatMs) * time.Millisecond)
 	s.mu.Unlock()
 	s.appendEntries()
 }

@@ -72,19 +72,20 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 		sum += l
 	}
 	avg := sum / time.Duration(len(latencies))
-	throughput := float64(n) / total.Seconds()
+	stableThroughput := float64(threads) / (float64(avg) / float64(time.Second))
 
 	fmt.Printf("\n")
 	fmt.Printf("======= Experimental Parameters =======\n")
 	fmt.Printf("%d entries, Batch: %d, Payload: %d, Threads: %d\n", n, batch, payload, threads)
 	fmt.Printf("=== client bench (remote Apply) ===\n")
-	fmt.Printf("  Total time   : %s\n", total)
-	fmt.Printf("  Throughput   : %.2f entries/s\n", throughput)
-	fmt.Printf("  Latency avg  : %s\n", avg)
-	fmt.Printf("  Latency min  : %s\n", latencies[0])
-	fmt.Printf("  Latency p50  : %s\n", latencies[len(latencies)*50/100])
-	fmt.Printf("  Latency p99  : %s\n", latencies[len(latencies)*99/100])
-	fmt.Printf("  Latency max  : %s\n", latencies[len(latencies)-1])
+	fmt.Printf("  Total time     : %s\n", total)
+	fmt.Printf("  Latency/entry (5s warmup + last drain removed, %d samples)\n", len(latencies))
+	fmt.Printf("  Throughput     : %.2f entries/s\n", stableThroughput)
+	fmt.Printf("  Latency avg    : %s\n", avg)
+	fmt.Printf("  Latency min    : %s\n", latencies[0])
+	fmt.Printf("  Latency p50    : %s\n", latencies[len(latencies)*50/100])
+	fmt.Printf("  Latency p99    : %s\n", latencies[len(latencies)*99/100])
+	fmt.Printf("  Latency max    : %s\n", latencies[len(latencies)-1])
 }
 
 func main() {
@@ -163,6 +164,8 @@ func main() {
 		}
 	}()
 
+	warmupEnd := start.Add(5 * time.Second)
+
 	for t := 0; t < *nThreads; t++ {
 		results[t] = make(chan threadResult, 1)
 		go func(tid int) {
@@ -189,7 +192,13 @@ func main() {
 					return
 				}
 				atomic.AddInt64(&done, int64(len(cmds)))
-				lats = append(lats, time.Since(t0))
+				if t0.After(warmupEnd) {
+					lats = append(lats, time.Since(t0)/time.Duration(len(cmds)))
+				}
+			}
+			// Drop last batch (pipeline drain)
+			if len(lats) > 0 {
+				lats = lats[:len(lats)-1]
 			}
 			results[tid] <- threadResult{latencies: lats}
 		}(t)
