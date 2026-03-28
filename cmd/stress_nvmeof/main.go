@@ -91,16 +91,16 @@ func main() {
 	}
 
 	cluster := []nvmeof_raft.ClusterMember{
-		{Id: 1, Address: "localhost:3020"},
-		{Id: 2, Address: "localhost:3021"},
-		{Id: 3, Address: "localhost:3022"},
+		{Id: 1, Address: "localhost:3020", DevicePath: DEVICE_PATH},
+		{Id: 2, Address: "localhost:3021", DevicePath: DEVICE_PATH},
+		{Id: 3, Address: "localhost:3022", DevicePath: DEVICE_PATH},
 	}
 
 	sm1, sm2, sm3 := &arraySM{}, &arraySM{}, &arraySM{}
 
-	s1 := nvmeof_raft.NewServer(cluster, sm1, METADATA_DIR, 0, DEVICE_PATH, PARTITION_OFF)
-	s2 := nvmeof_raft.NewServer(cluster, sm2, METADATA_DIR, 1, DEVICE_PATH, PARTITION_OFF)
-	s3 := nvmeof_raft.NewServer(cluster, sm3, METADATA_DIR, 2, DEVICE_PATH, PARTITION_OFF)
+	s1 := nvmeof_raft.NewServer(cluster, sm1, METADATA_DIR, 0, PARTITION_OFF)
+	s2 := nvmeof_raft.NewServer(cluster, sm2, METADATA_DIR, 1, PARTITION_OFF)
+	s3 := nvmeof_raft.NewServer(cluster, sm3, METADATA_DIR, 2, PARTITION_OFF)
 
 	s1.Debug = true
 	s2.Debug = true

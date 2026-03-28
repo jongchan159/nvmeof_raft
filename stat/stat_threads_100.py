@@ -1,6 +1,6 @@
 """
 Rawft vs GoRaft Benchmark Visualization
-Payload=1024B, Batch=32, Threads=[1,2,4,8,16,32]
+Payload=100B, Batch=16, Threads=[1,2,4,8,16,32,64,128]
 Python 3.6+ compatible
 """
 
@@ -13,73 +13,79 @@ import matplotlib.pyplot as plt
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stat_image")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Raw data (Payload=100B, Batch=32, Threads=[1,2,4,8,16,32,64])
-threads = [1, 2, 4, 8, 16, 32, 64]
+# Raw data (Payload=100B, Batch=16, Threads=[1,2,4,8,16,32,64,128])
+threads = [1, 2, 4, 8, 16, 32, 64, 128]
 
 # =========================
 # Rawft (NVMe-oF)
 # =========================
 nvme_throughput_raw = [
-    [10855.07],
-    [18569.86],
-    [29286.72],
-    [38785.68],
-    [44858.42],
-    [49642.38],
-    [58920.13],
+    [5027.16],
+    [8550.84],
+    [13535.64],
+    [22731.83],
+    [28152.39],
+    [34685.55],
+    [42528.63],
+    [55346.08],
 ]
 
 nvme_latency_avg_raw = [  # µs
-    [87.260],
-    [102.970],
-    [131.944],
-    [201.924],
-    [350.059],
-    [580.041],
-    [1076.414],
+    [192.668],
+    [227.34],
+    [288.65],
+    [343.945],
+    [556.467],
+    [904.016],
+    [1480.299],
+    [2281.844],
 ]
 
 nvme_latency_p99_raw = [  # µs
-    [121.005],
-    [172.424],
-    [258.503],
-    [686.629],
-    [1430.635],
-    [2104.192],
-    [2224.020],
+    [262.621],
+    [347.908],
+    [475.498],
+    [926.918],
+    [1409.98],
+    [4427.19],
+    [5518.405],
+    [4446.571],
 ]
 
 # =========================
 # GoRaft (baseline)
 # =========================
 goraft_throughput_raw = [
-    [1285.84],
-    [1305.83],
-    [1317.59],
-    [1324.58],
-    [1339.64],
-    [1307.70],
-    [1298.49],
+    [1276.22],
+    [1488.53],
+    [1665.76],
+    [1672.52],
+    [1608.61],
+    [1502.36],
+    [1495.56],
+    [1527.36],
 ]
 
 goraft_latency_avg_raw = [  # µs
-    [771.579],
-    [1527.161],
-    [3035.942],
-    [6047.531],
-    [11939.704],
-    [24511.734],
-    [39164.679],
+    [777.556],
+    [1336.923],
+    [2394.377],
+    [4771.867],
+    [9883.931],
+    [21188.141],
+    [42601.14],
+    [83188.875],
 ]
 
 goraft_latency_p99_raw = [  # µs
-    [843.915],
-    [1642.466],
-    [3197.426],
-    [6348.834],
-    [12428.823],
-    [25206.505],
-    [40312.022],
+    [929.62],
+    [1640.895],
+    [2887.562],
+    [6392.067],
+    [13971.547],
+    [27018.739],
+    [47427.472],
+    [120558.753],
 ]
 
 
@@ -115,7 +121,7 @@ FIGSIZE        = (7, 5)
 FONTSIZE_TITLE = 13
 FONTSIZE_LABEL = 11
 FONTSIZE_TICK  = 10
-PAYLOAD_LABEL  = 'Batch=32, Payload=100B'
+PAYLOAD_LABEL  = 'Batch=16, Payload=100B'
 
 
 # Figure 1: Throughput vs Threads
@@ -360,5 +366,34 @@ plt.savefig(os.path.join(OUTPUT_DIR, '5_bar_comparison_peak_100B.png'),
             dpi=150, bbox_inches='tight')
 plt.close()
 print('Saved: 5_bar_comparison_peak_100B.png')
+
+
+# Figure 6: Combined Avg + p99 Latency — Rawft vs goraft
+fig, ax = plt.subplots(figsize=(8, 5))
+x = np.arange(len(threads))
+
+ax.plot(x, nvme_avg, color=C_NVME, marker='o', linewidth=2,
+        linestyle='-', label='Rawft avg')
+ax.plot(x, nvme_p99, color=C_NVME_L, marker='^', linewidth=2,
+        linestyle='--', label='Rawft p99')
+ax.plot(x, goraft_avg, color=C_GORAFT, marker='s', linewidth=2,
+        linestyle='-', label='goraft avg')
+ax.plot(x, goraft_p99, color=C_GORAFT_L, marker='D', linewidth=2,
+        linestyle='--', label='goraft p99')
+
+
+ax.set_xticks(x)
+ax.set_xticklabels(threads)
+ax.set_xlabel('Number of Client Threads', fontsize=FONTSIZE_LABEL)
+ax.set_ylabel('Latency per Batch (us)', fontsize=FONTSIZE_LABEL)
+ax.set_title('Avg & p99 Latency vs Threads\n({})'.format(PAYLOAD_LABEL),
+             fontsize=FONTSIZE_TITLE)
+ax.tick_params(labelsize=FONTSIZE_TICK)
+ax.legend(fontsize=FONTSIZE_TICK)
+ax.grid(True, linestyle='--', alpha=0.5)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_DIR, '6_latency_combined_100B.png'), dpi=150)
+plt.close()
+print('Saved: 6_latency_combined_100B.png')
 
 print('\nAll graphs saved to:', OUTPUT_DIR)

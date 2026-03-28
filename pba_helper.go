@@ -70,15 +70,15 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 //
 // Must be called with s.mu held.
 // Returns nil on success; caller sets rsp.Success=false on error.
-func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
+func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64, leaderDevicePath string) error {
     if leaderPbaSrc == 0 || logBlockLength == 0 {
         return nil
     }
 
     nbytes := blockcopy.AlignUp(logBlockLength * uint64(BLOCK_UNIT))
 
-    // Read from leader's PBA via device (O_DIRECT read works over NVMe-oF)
-    buf, err := blockcopy.DirectRead(s.devicePath, leaderPbaSrc, nbytes)
+    // Read from leader's device (cross-device: each node has its own NVMe device)
+    buf, err := blockcopy.DirectRead(leaderDevicePath, leaderPbaSrc, nbytes)
     if err != nil {
         return fmt.Errorf("doPBACopy: DirectRead(pba=0x%X, nbytes=%d): %v", leaderPbaSrc, nbytes, err)
     }

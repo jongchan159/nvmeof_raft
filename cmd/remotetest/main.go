@@ -62,9 +62,8 @@ func main() {
 	// Command line flags
 	nodeID := flag.Uint64("id", 0, "Node ID (required)")
 	address := flag.String("address", "", "Node address (e.g., localhost:7001)")
-	peers := flag.String("peers", "", "Peer addresses (comma-separated, e.g., node1:7001,node2:7002,node3:7003)")
+	peers := flag.String("peers", "", "Comma-separated entries: host1:port1:device1,host2:port2:device2,...")
 	metadataDir := flag.String("metadata-dir", "./metadata", "Metadata directory for Raft logs")
-	devicePath := flag.String("device", "/dev/nvme0n1", "NVMe-oF block device path")
 	partOffset := flag.Uint64("partition-offset", 0,
 		"Partition start offset in bytes (sector_start * 512)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
@@ -92,22 +91,25 @@ func main() {
 	var clusterConfig []nvmeof_raft.ClusterMember
 	var clusterIndex int = -1
 
-	for i, peerAddr := range peerList {
-		peerAddr = strings.TrimSpace(peerAddr)
+	for i, entry := range peerList {
+		entry = strings.TrimSpace(entry)
+		parts := strings.SplitN(entry, ":", 3) // host, port, device
+		if len(parts) != 3 {
+			log.Fatalf("invalid peer %q: expected host:port:device", entry)
+		}
+		peerAddr := parts[0] + ":" + parts[1]
+		devicePath := parts[2]
 
-		// Assign node ID based on position (starting from 1)
-		// Or try to match with provided node ID
 		nodeIDForPeer := uint64(i + 1)
-
-		// If this peer matches our address, this is our node
 		if peerAddr == *address {
 			nodeIDForPeer = *nodeID
 			clusterIndex = i
 		}
 
 		clusterConfig = append(clusterConfig, nvmeof_raft.ClusterMember{
-			Id:      nodeIDForPeer,
-			Address: peerAddr,
+			Id:         nodeIDForPeer,
+			Address:    peerAddr,
+			DevicePath: devicePath,
 		})
 	}
 
@@ -119,7 +121,6 @@ func main() {
 			Address: *address,
 		})
 	} else {
-		// Update the ID at our index to match our node ID
 		clusterConfig[clusterIndex].Id = *nodeID
 	}
 
@@ -137,7 +138,6 @@ func main() {
 		stateMachine,
 		*metadataDir,
 		clusterIndex,
-		*devicePath,
 		*partOffset,
 	)
 

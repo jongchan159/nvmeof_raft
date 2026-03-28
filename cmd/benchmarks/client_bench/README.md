@@ -12,6 +12,7 @@ From the project root (`~/nvmeof_raft`):
 
 ```console
 GOPATH=~/go
+
 # RDMA version
 go build -tags raft -o bench_client ./cmd/benchmarks/client_bench/
 
@@ -28,7 +29,14 @@ The client binary does **not** need a block device or metadata directory — it 
 Start the three Raft nodes first (without `--bench`), let them elect a leader, then run the client on a separate machine (e.g. `eternity2`):
 
 **Raft nodes (eternity4 / eternity5 / eternity6):**
+#### nvmeof
 ```console
+# eternity4 (node 0) — no --bench, just participates
+sudo ./bench_multi_nvmeof --id=0 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --device=/dev/nvme0n1 --partition-offset=1048576
+
 # eternity5 (node 1)
 sudo ./bench_multi_nvmeof --id=1 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
@@ -40,12 +48,28 @@ sudo ./bench_multi_nvmeof --id=2 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
   --device=/dev/nvme0n1 --partition-offset=21475885056
+```
 
-# eternity4 (node 0) — no --bench, just participates
-sudo ./bench_multi_nvmeof --id=0 \
+#### goraft
+```console
+# node 0 — eternity4 (benchmark driver)
+sudo ./bench_multi_goraft \
+  --id=0 \
   --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme1n1 --partition-offset=1048576
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
+
+# node 1 — eternity5 (follower)
+sudo ./bench_multi_goraft \
+  --id=1 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
+
+# node 2 — eternity6 (follower)
+sudo ./bench_multi_goraft \
+  --id=2 \
+  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_goraft
+
 ```
 
 **Client node (eternity2 or any other machine with IB connectivity):**

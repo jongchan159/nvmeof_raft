@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"syscall"
 	"time"
 	"nvmeof_raft/blockcopy"
 	"nvmeof_raft/rdmacm"
@@ -122,6 +123,7 @@ func (st LogEntryState) String() string {
 type ClusterMember struct {
 	Id           uint64
 	Address      string
+	DevicePath   string
 	nextDialTime time.Time
 	nextIndex  uint64
 	matchIndex uint64
@@ -459,18 +461,20 @@ func (s *Server) restoreCircular() {
 		}
 	}
 
-    // Pre-allocate full ring file so all slots have physical blocks (FIEMAP)
-    const RING_FILE_SIZE = TOTAL_SLOTS * BLOCK_UNIT
-    stat, err := s.fd.Stat()
-    if err != nil {
-        panic(err)
-    }
-    if stat.Size() < RING_FILE_SIZE {
-        zeros := make([]byte, RING_FILE_SIZE-stat.Size())
-        s.fd.Seek(stat.Size(), 0)
-        s.fd.Write(zeros)
-        s.fd.Sync()
-    }
+	// Pre-allocate full ring file so all slots have physical blocks (FIEMAP).
+	// fallocate ensures physical extents are allocated (not sparse holes),
+	// which is required for FIEMAP to return valid PBAs.
+	const RING_FILE_SIZE = TOTAL_SLOTS * BLOCK_UNIT
+	stat, err := s.fd.Stat()
+	if err != nil {
+		panic(err)
+	}
+	if stat.Size() < RING_FILE_SIZE {
+		if err := syscall.Fallocate(int(s.fd.Fd()), 0, 0, RING_FILE_SIZE); err != nil {
+			panic(fmt.Errorf("fallocate metadata file: %v", err))
+		}
+		s.fd.Sync()
+	}
 
 	s.fd.Seek(0, 0)
 	var header [HEADER_SIZE]byte
@@ -608,7 +612,6 @@ func NewServer(
 	statemachine StateMachine,
 	metadataDir string,
 	clusterIndex int,
-	devicePath string, // nvme device
 	partitionOffsetBytes uint64, // partition offset
 ) *Server {
 	var cluster []ClusterMember
@@ -626,7 +629,7 @@ func NewServer(
 		statemachine:         statemachine,
 		metadataDir:          metadataDir,
 		clusterIndex:         clusterIndex,
-		devicePath:           devicePath,
+		devicePath:           cluster[clusterIndex].DevicePath,
 		partitionOffsetBytes: partitionOffsetBytes,
 
 		HeartbeatMs: 300,
@@ -803,7 +806,14 @@ func (s *Server) HandleAppendEntriesRequest(req AppendEntriesRequest, rsp *Appen
 
 		exactSlots := req.LogBlockLength
 
-		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength, oldTailSlot); err != nil {
+		var leaderDevicePath string
+		for _, m := range s.cluster {
+			if m.Id == req.LeaderId {
+				leaderDevicePath = m.DevicePath
+				break
+			}
+		}
+		if err := s.doPBACopy(req.LeaderPbaSrc, req.LogBlockLength, oldTailSlot, leaderDevicePath); err != nil {
 			s.warnf("doPBACopy failed: %v", err)
 			return nil
 		}
@@ -1129,7 +1139,7 @@ func (s *Server) appendEntries() {
 
 			var leaderPbaSrc uint64
 			if lenEntries > 0 {
-				pbaSrc, pbaBytes, err := s.leaderPBAForRange(startSlot, totalSlots)
+				pbaSrc, _, err := s.leaderPBAForRange(startSlot, totalSlots)
 				if err != nil {
 					s.mu.Unlock()
 					s.warnf("leaderPBAForRange failed: %v", err)
@@ -1347,16 +1357,15 @@ func (s *Server) followerPBAForNext(nbytes uint64) (pbaDst uint64, err error) {
 	return seg.PBA + s.partitionOffsetBytes, nil
 }
 
-// doPBACopy performs a storage-level block copy on behalf of the follower,
-// bypassing the filesystem entirely.
+// doPBACopy performs a cross-device storage-level block copy on behalf of the follower.
 //
 // Flow:
 //  1. Resolve follower's destination PBA at dstSlot via FIEMAP
-//  2. Call R_write_pba(device, leaderPbaSrc, followerPbaDst, nbytes)
-//     — storage node copies the block at the device level, no fd.WriteAt involved
+//  2. DirectRead from leaderDevicePath at leaderPbaSrc
+//  3. DirectWrite to s.devicePath (follower's own device) at followerPbaDst
 //
 // Must be called with s.mu held.
-func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
+func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64, leaderDevicePath string) error {
 	if leaderPbaSrc == 0 || logBlockLength == 0 {
 		return nil
 	}
@@ -1372,14 +1381,17 @@ func (s *Server) doPBACopy(leaderPbaSrc, logBlockLength, dstSlot uint64) error {
 	}
 	followerPbaDst := seg.PBA + s.partitionOffsetBytes
 
-	// Device-to-device block copy: bypasses filesystem, no fd.WriteAt
-	if err := blockcopy.R_write_pba(s.devicePath, leaderPbaSrc, followerPbaDst, nbytes); err != nil {
-		return fmt.Errorf("doPBACopy: R_write_pba(src=0x%X, dst=0x%X, nbytes=%d): %v",
-			leaderPbaSrc, followerPbaDst, nbytes, err)
+	// Cross-device copy: read from leader's device, write to follower's device
+	buf, err := blockcopy.DirectRead(leaderDevicePath, leaderPbaSrc, nbytes)
+	if err != nil {
+		return fmt.Errorf("doPBACopy: DirectRead(leader pba=0x%X, nbytes=%d): %v", leaderPbaSrc, nbytes, err)
+	}
+	if err := blockcopy.DirectWrite(s.devicePath, followerPbaDst, buf[:nbytes]); err != nil {
+		return fmt.Errorf("doPBACopy: DirectWrite(follower pba=0x%X, nbytes=%d): %v", followerPbaDst, nbytes, err)
 	}
 
-	s.debugf("[PBA COPY] src=0x%X -> dst=0x%X nbytes=%d blocks=%d",
-		leaderPbaSrc, followerPbaDst, nbytes, logBlockLength)
+	s.debugf("[PBA COPY] src=0x%X(%s) -> dst=0x%X(%s) nbytes=%d blocks=%d",
+		leaderPbaSrc, leaderDevicePath, followerPbaDst, s.devicePath, nbytes, logBlockLength)
 	return nil
 }
 

@@ -13,21 +13,21 @@ import matplotlib.pyplot as plt
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stat_image")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-threads = [1, 2, 4, 8, 16, 32, 64]
-
-# ── Payload = 100B ────────────────────────────────────────────────────────
-nvme1024_tp  = [7306.61, 11988.29, 18127.34, 26652.39, 29353.97, 29305.26, 23119.78]
-nvme1024_avg = [107.814, 137.912,  190.068,  265.863,  508.194,  1044.155, 2717.260]
-
-goraft1024_tp  = [1396.85, 1457.03, 1564.83, 1701.93, 1701.00, 1665.73, 1548.76]
-goraft1024_avg = [687.458, 1343.794, 2524.819, 4665.786, 9362.775, 19122.815, 41023.043]
+threads = [1, 2, 4, 8, 16, 32, 64, 128]
 
 # ── Payload = 1024B ───────────────────────────────────────────────────────
-nvme100_tp  = [10855.07, 18569.86, 29286.72, 38785.68, 44858.42, 49642.38, 58920.13]
-nvme100_avg = [87.260,   102.970,  131.944,  201.924,  350.059,  580.041,  1076.414]
+nvme1024_tp  = [3509.24, 5618.75, 8914.66, 12708.88, 19670.86, 24931.45, 35083.93, 32309.41]
+nvme1024_avg = [226.253, 300.362, 389.37,  560.385,  738.936,  1192.95,  1727.992, 3855.002]
 
-goraft100_tp  = [1285.84, 1305.83, 1317.59, 1324.58, 1339.64, 1307.70, 1298.49]
-goraft100_avg = [771.579, 1527.161, 3035.942, 6047.531, 11939.704, 24511.734, 39164.679]
+goraft1024_tp  = [1027.72, 1167.68, 1327.82, 1383.45, 1469.78, 1468.10, 1556.90, 1572.12]
+goraft1024_avg = [909.744, 1650.899, 2950.216, 5717.465, 10808.232, 21689.75, 40904.71, 80609.466]
+
+# ── Payload = 100B ────────────────────────────────────────────────────────
+nvme100_tp  = [5027.16, 8550.84, 13535.64, 22731.83, 28152.39, 34685.55, 42528.63, 55346.08]
+nvme100_avg = [192.668, 227.34,  288.65,   343.945,  556.467,  904.016,  1480.299, 2281.844]
+
+goraft100_tp  = [1276.22, 1488.53, 1665.76, 1672.52, 1608.61, 1502.36, 1495.56, 1527.36]
+goraft100_avg = [777.556, 1336.923, 2394.377, 4771.867, 9883.931, 21188.141, 42601.14, 83188.875]
 
 # ── Style ─────────────────────────────────────────────────────────────────
 C_100B  = '#2563EB'   # blue  — payload 100B
@@ -79,7 +79,7 @@ fig, ax = plt.subplots(figsize=FIGSIZE)
 draw_graph(ax,
            tp100=nvme100_tp, lat100=nvme100_avg,
            tp1024=nvme1024_tp, lat1024=nvme1024_avg,
-           title='nvmeof_raft (PBA)\nLatency-Throughput Tradeoff (Batch=32)')
+           title='nvmeof_raft (PBA)\nLatency-Throughput Tradeoff (Batch=16)')
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, 'dual_payload_nvmeof.png'), dpi=150)
 plt.close()
@@ -93,7 +93,7 @@ fig, ax = plt.subplots(figsize=FIGSIZE)
 draw_graph(ax,
            tp100=goraft100_tp, lat100=goraft100_avg,
            tp1024=goraft1024_tp, lat1024=goraft1024_avg,
-           title='goraft (TCP)\nLatency-Throughput Tradeoff (Batch=32)')
+           title='goraft (TCP)\nLatency-Throughput Tradeoff (Batch=16)')
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, 'dual_payload_goraft.png'), dpi=150)
 plt.close()
@@ -132,7 +132,7 @@ annotate_threads(ax, goraft1024_tp, goraft1024_avg, C_GORAFT_1024)
  
 ax.set_xlabel('Throughput (entries/s)', fontsize=FONTSIZE_LABEL)
 ax.set_ylabel('Avg Latency per Batch (us)', fontsize=FONTSIZE_LABEL)
-ax.set_title('Latency-Throughput Tradeoff\nnvmeof_raft vs goraft · Payload 100B vs 1024B (Batch=32)',
+ax.set_title('Latency-Throughput Tradeoff\nnvmeof_raft vs goraft · Payload 100B vs 1024B (Batch=16)',
              fontsize=FONTSIZE_TITLE)
 ax.tick_params(labelsize=FONTSIZE_TICK)
 ax.legend(fontsize=FONTSIZE_TICK, loc='upper right')

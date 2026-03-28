@@ -14,8 +14,10 @@ From the project root (`~/nvmeof_raft`):
 
 ```console
 GOPATH=~/go
+
 # rmda RPC version
 go build -o bench_goraft -tags raft ./cmd/benchmarks/goraft_bench/
+
 # tcp/ip RPC version
 go build -o bench_goraft_tcp -tags raft_tcp ./cmd/benchmarks/goraft_bench/
 ```

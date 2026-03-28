@@ -9,48 +9,47 @@ cd ~/nvmeof_raft
 go mod init nvmeof_raft
 go mod tidy
 
-# main.go를 cmd/ 디렉토리에 배치
-mkdir -p cmd
-cp main.go cmd/
+# RDMA 버전
+go build -tags raft -o raft_server ./cmd/remotetest/
 
-# 빌드
-go build -o raft_server ./cmd
-
-# 또는 직접 빌드
-go build -o raft_server main.go
+# TCP 버전
+go build -tags raft_tcp -o raft_server ./cmd/remotetest/
 ```
 
 ## 3노드 클러스터 실행
 
-# eternity4:
-sudo ./raft_server --id=1 --address=eternity4:7004 \
-  --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
+각 노드의 디바이스 경로는 `--peers` 문자열에 `host:port:device` 형식으로 포함됩니다.
+모든 노드에 동일한 `--peers` 문자열을 전달해야 합니다.
+
+```bash
+# 10.0.0.4 (/dev/nvme0n1):
+sudo ./raft_server --id=1 --address=10.0.0.4:7004 \
+  --peers=10.0.0.4:7004:/dev/nvme0n1,10.0.0.5:7005:/dev/nvme2n1,10.0.0.6:7006:/dev/nvme0n1 \
   --metadata-dir=/mnt/nvmeof_raft/metadata4 \
-  --device=/dev/nvme1n1 \
   --partition-offset=1048576 --debug
 
-# eternity5:
-sudo ./raft_server --id=2 --address=eternity5:7005 \
-  --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
+# 10.0.0.5 (/dev/nvme2n1):
+sudo ./raft_server --id=2 --address=10.0.0.5:7005 \
+  --peers=10.0.0.4:7004:/dev/nvme0n1,10.0.0.5:7005:/dev/nvme2n1,10.0.0.6:7006:/dev/nvme0n1 \
   --metadata-dir=/mnt/nvmeof_raft/metadata5 \
-  --device=/dev/nvme2n1 \
-  --partition-offset=53688139776 --debug
+  --partition-offset=1048576 --debug
 
-# eternity6:
-sudo ./raft_server --id=3 --address=eternity6:7006 \
-  --peers=eternity4:7004,eternity5:7005,eternity6:7006 \
+# 10.0.0.6 (/dev/nvme2n1):
+sudo ./raft_server --id=3 --address=10.0.0.6:7006 \
+  --peers=10.0.0.4:7004:/dev/nvme0n1,10.0.0.5:7005:/dev/nvme2n1,10.0.0.6:7006:/dev/nvme0n1 \
   --metadata-dir=/mnt/nvmeof_raft/metadata6 \
-  --device=/dev/nvme0n1 \
-  --partition-offset=107375230976 --debug
+  --partition-offset=1048576 --debug
+```
 
 ## 명령어 플래그
 
 | Flag | 설명 | 예시 | 필수 |
 |------|------|------|------|
-| `--id` | 노드 ID (0이 아닌 숫자) | `--id=5` | ✅ |
-| `--address` | 이 노드의 주소 | `--address=localhost:7001` | ✅ |
-| `--peers` | 클러스터의 모든 노드 (쉼표로 구분) | `--peers=node1:7001,node2:7002` | ✅ |
+| `--id` | 노드 ID (0이 아닌 숫자) | `--id=1` | ✅ |
+| `--address` | 이 노드의 주소 | `--address=10.0.0.4:7004` | ✅ |
+| `--peers` | 클러스터의 모든 노드, `host:port:device` 형식 | `--peers=10.0.0.4:7004:/dev/nvme0n1,eternity5:7005:/dev/nvme1n1` | ✅ |
 | `--metadata-dir` | 메타데이터 저장 디렉토리 | `--metadata-dir=./data` | ❌ (기본: ./metadata) |
+| `--partition-offset` | 파티션 시작 오프셋 (sector_start × 512) | `--partition-offset=1048576` | ❌ (기본: 0) |
 | `--debug` | 디버그 로그 활성화 | `--debug` | ❌ |
 
 ## State Machine
@@ -79,10 +78,10 @@ result, err := server.Apply([][]byte{
 
 ```bash
 # 메타데이터 파일 확인
-ls -la /mnt/nvme0n1/jongc/nvmeof_raft/metadata5/
+ls -la /mnt/nvmeof_raft/metadata4/
 
 # Raft 로그 파일
-# md_5.dat - Node 5의 persistent state
+# md_1.dat - Node 1의 persistent state
 ```
 
 ## 종료
@@ -103,7 +102,7 @@ kill <PID>
 ### 문제 2: "permission denied" (metadata directory)
 ```bash
 # 디렉토리 권한 확인
-sudo chown -R $USER:$USER /mnt/nvme0n1/jongc/nvmeof_raft/
+sudo chown -R $USER:$USER /mnt/nvmeof_raft/
 ```
 
 ### 문제 3: 노드가 서로 연결 안 됨

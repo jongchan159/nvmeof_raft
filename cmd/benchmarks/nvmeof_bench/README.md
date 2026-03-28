@@ -24,7 +24,7 @@ The source uses the `raft` build tag to compile the NVMe-oF path.
 Run from the project root (`~/nvmeof_raft`):ß
 
 ```console
-GOPATH=~/go 
+GOPATH=~/go
 # RDMA version
 go build -tags raft -o bench_nvmeof ./cmd/benchmarks/nvmeof_bench/
 # TCP version
@@ -37,7 +37,10 @@ The binary is placed in the current directory.
 
 ### Distributed cluster (intended use)
 
-Each node specifies its own block device path and partition offset.
+Each node's device path is embedded in the `--peers` string as `host:port:device`.
+Every node receives the full peer list, so followers know which device to read
+from when doing cross-device PBA block copy.
+
 Pass `--bench` on one or all nodes — whichever wins the leader election
 runs the benchmark; the others serve as followers.
 
@@ -51,31 +54,28 @@ sudo fdisk -l /dev/nvme<X>n1
 Use `--entries`, `--batch`, and `--payload` to override the benchmark parameters.
 
 ```console
-# node 0  (eternity4) — drives benchmark
+# node 0  (eternity4) — drives benchmark  (/dev/nvme0n1)
 sudo ./bench_nvmeof \
   --id=0 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --peers=10.0.0.4:4020:/dev/nvme0n1,10.0.0.5:4020:/dev/nvme1n1,10.0.0.6:4020:/dev/nvme2n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=16 --payload=65536 \
   --bench
 
-# node 1  (eternity5)
+# node 1  (eternity5) — follower  (/dev/nvme1n1)
 sudo ./bench_nvmeof \
   --id=1 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --peers=10.0.0.4:4020:/dev/nvme3n1,10.0.0.5:4020:/dev/nvme2n1,10.0.0.6:4020:/dev/nvme4n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme2n1 \
-  --partition-offset=10738466816
+  --partition-offset=1048576
 
-# node 2  (eternity6)
+# node 2  (eternity6) — follower  (/dev/nvme2n1)
 sudo ./bench_nvmeof \
   --id=2 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --peers=10.0.0.4:4020:/dev/nvme1n1,10.0.0.5:4020:/dev/nvme2n1,10.0.0.6:4020:/dev/nvme0n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
-  --partition-offset=21475885056
+  --partition-offset=1048576
 ```
 
 #### TCP Version
@@ -84,9 +84,8 @@ sudo ./bench_nvmeof \
 # node 0  (eternity4) — drives benchmark
 sudo ./bench_nvmeof_tcp \
   --id=0 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=256 --payload=8192 \
   --bench
@@ -94,18 +93,16 @@ sudo ./bench_nvmeof_tcp \
 # node 1  (eternity5)
 sudo ./bench_nvmeof_tcp \
   --id=1 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeos \
-  --device=/dev/nvme2n1 \
-  --partition-offset=10738466816
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --partition-offset=1048576
 
 # node 2  (eternity6)
 sudo ./bench_nvmeof_tcp \
   --id=2 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
-  --partition-offset=21475885056
+  --partition-offset=1048576
 ```
 
 #### TCP Version with IPoIB
@@ -114,9 +111,8 @@ sudo ./bench_nvmeof_tcp \
 # node 0  (eternity4) — drives benchmark
 sudo ./bench_nvmeof_tcp \
   --id=0 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --peers=10.0.0.4:4020:/dev/nvme0n1,10.0.0.5:4020:/dev/nvme1n1,10.0.0.6:4020:/dev/nvme2n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=256 --payload=8192 \
   --bench
@@ -124,19 +120,16 @@ sudo ./bench_nvmeof_tcp \
 # node 1  (eternity5)
 sudo ./bench_nvmeof_tcp \
   --id=1 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
-  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeos \
-  --device=/dev/nvme2n1 \
-  --partition-offset=10738466816
+  --peers=10.0.0.4:4020:/dev/nvme0n1,10.0.0.5:4020:/dev/nvme1n1,10.0.0.6:4020:/dev/nvme2n1 \
+  --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
+  --partition-offset=1048576
 
 # node 2  (eternity6)
 sudo ./bench_nvmeof_tcp \
   --id=2 \
-  --peers=10.0.0.4:4020,10.0.0.5:4021,10.0.0.6:4022 \
+  --peers=10.0.0.4:4020:/dev/nvme0n1,10.0.0.5:4020:/dev/nvme1n1,10.0.0.6:4020:/dev/nvme2n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
-  --partition-offset=21475885056
-
+  --partition-offset=1048576
 ```
 
 ## Flags
@@ -144,9 +137,8 @@ sudo ./bench_nvmeof_tcp \
 | Flag                 | Default                | Description                                                  |
 |----------------------|------------------------|--------------------------------------------------------------|
 | `--id`               | `0`                    | 0-based index into `--peers` list (this node)                |
-| `--peers`            | *(required)*           | Comma-separated `host:port` list of all 3 nodes              |
+| `--peers`            | *(required)*           | Comma-separated `host:port:device` list of all nodes         |
 | `--metadata-dir`     | `./bench_nvmeof_data`  | Directory for ring buffer `.dat` files (must be on NVMe)     |
-| `--device`           | `/dev/nvme0n1`         | NVMe-oF block device path for O_DIRECT block copy            |
 | `--partition-offset` | `0`                    | Partition start offset in bytes (`sector_start × 512`)       |
 | `--entries`          | `10000`                | Number of entries to submit                                  |
 | `--batch`            | `256`                  | Commands per `Apply()` call                                  |
@@ -183,12 +175,13 @@ sudo ./bench_nvmeof_tcp \
 
 
 ## 5-node test command
+
+```console
 # node 0 (eternity4) — drives benchmark
 sudo ./bench_nvmeof \
   --id=0 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1,eternity2:4020:/dev/nvme0n1,eternity7:4020:/dev/nvme1n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme1n1 \
   --partition-offset=1048576 \
   --entries=100000 --batch=16 --payload=65536 \
   --bench
@@ -196,31 +189,28 @@ sudo ./bench_nvmeof \
 # node 1 (eternity5)
 sudo ./bench_nvmeof \
   --id=1 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1,eternity2:4020:/dev/nvme0n1,eternity7:4020:/dev/nvme1n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme2n1 \
-  --partition-offset=53688139776
+  --partition-offset=1048576
 
 # node 2 (eternity6)
 sudo ./bench_nvmeof \
   --id=2 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1,eternity2:4020:/dev/nvme0n1,eternity7:4020:/dev/nvme1n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme0n1 \
-  --partition-offset=107375230976
+  --partition-offset=1048576
 
 # node 3 (eternity2)
 sudo ./bench_nvmeof \
   --id=3 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1,eternity2:4020:/dev/nvme0n1,eternity7:4020:/dev/nvme1n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme2n1 \
-  --partition-offset=161062322176
+  --partition-offset=1048576
 
 # node 4 (eternity7)
 sudo ./bench_nvmeof \
   --id=4 \
-  --peers=eternity4:4020,eternity5:4021,eternity6:4022,eternity2:4023,eternity7:4024 \
+  --peers=eternity4:4020:/dev/nvme0n1,eternity5:4020:/dev/nvme1n1,eternity6:4020:/dev/nvme2n1,eternity2:4020:/dev/nvme0n1,eternity7:4020:/dev/nvme1n1 \
   --metadata-dir=/mnt/nvmeof_raft/bench_nvmeof \
-  --device=/dev/nvme2n1 \
-  --partition-offset=214749413376
+  --partition-offset=1048576
+```

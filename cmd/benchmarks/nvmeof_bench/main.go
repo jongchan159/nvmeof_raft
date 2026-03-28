@@ -35,10 +35,17 @@ func randomPayload(size int) []byte {
 
 func parsePeers(peersStr string) []nvmeof_raft.ClusterMember {
 	var members []nvmeof_raft.ClusterMember
-	for i, addr := range strings.Split(peersStr, ",") {
+	for i, entry := range strings.Split(peersStr, ",") {
+		entry = strings.TrimSpace(entry)
+		parts := strings.SplitN(entry, ":", 3) // host, port, device
+		if len(parts) != 3 {
+			fmt.Fprintf(os.Stderr, "invalid peer %q: expected host:port:device\n", entry)
+			os.Exit(1)
+		}
 		members = append(members, nvmeof_raft.ClusterMember{
-			Id:      uint64(i + 1),
-			Address: strings.TrimSpace(addr),
+			Id:         uint64(i + 1),
+			Address:    parts[0] + ":" + parts[1],
+			DevicePath: parts[2],
 		})
 	}
 	return members
@@ -73,9 +80,8 @@ func printStats(latencies []time.Duration, total time.Duration, n, batch, payloa
 
 func main() {
 	id             := flag.Int("id", 0, "node index in peers list (0-based)")
-	peersStr       := flag.String("peers", "", "comma-separated addresses: host1:port,host2:port,host3:port")
+	peersStr       := flag.String("peers", "", "comma-separated entries: host1:port1:device1,host2:port2:device2,...")
 	metadataDir    := flag.String("metadata-dir", "./bench_nvmeof_data", "directory for ring buffer .dat files (must be on NVMe partition)")
-	devicePath     := flag.String("device", "/dev/nvme0n1", "NVMe-oF block device path")
 	partitionOffset := flag.Uint64("partition-offset", 0, "partition start offset in bytes (sector_start * 512)")
 	bench          := flag.Bool("bench", false, "run benchmark on this node if it becomes leader")
 	debug          := flag.Bool("debug", false, "enable raft debug logging")
@@ -85,7 +91,7 @@ func main() {
 	flag.Parse()
 
 	if *peersStr == "" {
-		fmt.Fprintln(os.Stderr, "usage: bench_nvmeof --id=0 --peers=h1:4020,h2:4021,h3:4022 --device=/dev/nvme0n1 --partition-offset=N [--bench]")
+		fmt.Fprintln(os.Stderr, "usage: bench_nvmeof --id=0 --peers=h1:4020:/dev/nvme0n1,h2:4020:/dev/nvme1n1,h3:4020:/dev/nvme2n1 --partition-offset=N [--bench]")
 		os.Exit(1)
 	}
 
@@ -99,7 +105,7 @@ func main() {
 	}
 
 	cluster := parsePeers(*peersStr)
-	server := nvmeof_raft.NewServer(cluster, &nullSM{}, *metadataDir, *id, *devicePath, *partitionOffset)
+	server := nvmeof_raft.NewServer(cluster, &nullSM{}, *metadataDir, *id, *partitionOffset)
 	server.Debug = *debug
 	server.Start()
 	fmt.Printf("[node %d] started at %s\n", cluster[*id].Id, cluster[*id].Address)
